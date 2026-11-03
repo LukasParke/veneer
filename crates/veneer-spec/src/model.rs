@@ -169,7 +169,7 @@ pub struct FileSpec {
 #[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum ServiceEntry {
-    Def(Service),
+    Def(Box<Service>),
     Import(String),
 }
 
@@ -266,16 +266,14 @@ impl Spec {
             }
         }
         for (name, entry) in &self.services {
-            if let ServiceEntry::Def(svc) = entry {
-                if svc.image.is_some() == svc.run.is_some() {
-                    out.push(Violation {
-                        code: codes::SERVICE_KIND,
-                        pointer: format!("/services/{}", escape_pointer_token(name)),
-                        message: format!(
-                            "service `{name}` must set exactly one of `image` or `run`"
-                        ),
-                    });
-                }
+            if let ServiceEntry::Def(svc) = entry
+                && svc.image.is_some() == svc.run.is_some()
+            {
+                out.push(Violation {
+                    code: codes::SERVICE_KIND,
+                    pointer: format!("/services/{}", escape_pointer_token(name)),
+                    message: format!("service `{name}` must set exactly one of `image` or `run`"),
+                });
             }
         }
         out

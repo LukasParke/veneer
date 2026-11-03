@@ -133,9 +133,10 @@ pub fn check_templates(tree: &Node) -> Vec<Diagnostic> {
                         .at(node.span.clone())
                         .note("move the value to a workspace-phase block (env, workspace, services, hooks.workspace)"),
                 );
-            } else if root == "vars" {
-                if let Some((name, cause)) =
+            } else if root == "vars"
+                && let Some((name, cause)) =
                     parts.next().and_then(|v| tainted.get(v).map(|c| (v, c)))
+            {
                 {
                     diags.push(
                         Diagnostic::error(

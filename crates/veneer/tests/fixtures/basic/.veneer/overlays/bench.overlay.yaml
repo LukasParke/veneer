@@ -1,0 +1,9 @@
+overlay: 1.0.0
+info: { title: bench, version: "1" }
+actions:
+  - target: $.env
+    description: enable bench mode
+    update: { BENCH_MODE: "1" }
+  - target: $.services.db
+    description: no database in bench runs
+    remove: true

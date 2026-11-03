@@ -1,0 +1,6 @@
+version: 1
+base: ubuntu:24.04
+packages: [git, libpq-dev]
+env:
+  LOG_LEVEL: info
+  DEBUG: "1"
