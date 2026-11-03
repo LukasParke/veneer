@@ -892,6 +892,7 @@ dependencies = [
  "suspect-syntax",
  "tempfile",
  "veneer-spec",
+ "veneer-template",
 ]
 
 [[package]]
