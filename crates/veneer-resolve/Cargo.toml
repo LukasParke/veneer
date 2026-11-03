@@ -14,6 +14,7 @@ suspect-source.workspace = true
 suspect-syntax.workspace = true
 suspect-low.workspace = true
 suspect-ref.workspace = true
+suspect-overlay.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

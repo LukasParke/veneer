@@ -661,6 +661,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b2231b7c3057d5e4ad0156fb3dc807d900806020c5ffa3ee6ff2c8c76fb8520"
 
 [[package]]
+name = "suspect-jsonpath"
+version = "0.1.0"
+source = "git+https://github.com/LukasParke/suspect?rev=f0156145fe4d3f3d138f9dd68cd0f96a977e92e4#f0156145fe4d3f3d138f9dd68cd0f96a977e92e4"
+dependencies = [
+ "regex",
+ "suspect-low",
+ "thiserror",
+]
+
+[[package]]
 name = "suspect-low"
 version = "0.1.0"
 source = "git+https://github.com/LukasParke/suspect?rev=f0156145fe4d3f3d138f9dd68cd0f96a977e92e4#f0156145fe4d3f3d138f9dd68cd0f96a977e92e4"
@@ -669,6 +679,17 @@ dependencies = [
  "smallvec",
  "suspect-source",
  "suspect-syntax",
+ "thiserror",
+]
+
+[[package]]
+name = "suspect-overlay"
+version = "0.1.0"
+source = "git+https://github.com/LukasParke/suspect?rev=f0156145fe4d3f3d138f9dd68cd0f96a977e92e4#f0156145fe4d3f3d138f9dd68cd0f96a977e92e4"
+dependencies = [
+ "suspect-jsonpath",
+ "suspect-low",
+ "suspect-source",
  "thiserror",
 ]
 
@@ -849,6 +870,7 @@ dependencies = [
  "indexmap",
  "serde_json",
  "suspect-low",
+ "suspect-overlay",
  "suspect-ref",
  "suspect-source",
  "suspect-syntax",
