@@ -30,6 +30,12 @@ environment. On a pre-baked image only the per-workspace phase runs.
 Specs split across files with `$ref` (JSON Reference), layer with `extends`, vary with
 [Overlay 1.0](https://spec.openapis.org/overlay/v1.0.0.html) files, and import existing
 `mise.toml`, `.tool-versions`, `compose.yaml`, lockfiles, and `Brewfile`s through `from:`.
+`extends: [../.devcontainer/devcontainer.json]` reuses a Dev Container definition: image,
+env, lifecycle commands, and [Features](https://containers.dev/features) (pulled over OCI).
+
+Specs and layers can live anywhere: a local path, `github:org/repo//path@ref`,
+`git+https://…`, `https://…`, or an OCI artifact (`oci://ghcr.io/org/envs:v1`, push with
+`oras push`). Remote sources are pinned by commit or manifest digest in `.veneer/veneer.lock`.
 
 ## Commands
 
@@ -42,10 +48,13 @@ veneer exec -- <cmd>                # run with the workspace env and tools on PA
 veneer env --format sh|json|dotenv  # print the env (secrets masked)
 veneer down [--rm]                  # stop services (and delete the workspace)
 veneer bake --target oci|rootfs     # bake the build phase into an image or ext4 rootfs
+                                    #   (--overlay/--set carry into the image)
 veneer entrypoint -- <cmd>          # container entrypoint: workspace phase, then exec
 veneer lock [--update]              # pin remote sources in .veneer/veneer.lock
 veneer schema                       # JSON Schema for editors
 ```
+
+In other Dockerfiles: `COPY --from=ghcr.io/lukasparke/veneer:1 /veneer /usr/local/bin/veneer`.
 
 Every step goes check → apply → verify, with a write-ahead journal. If a run is killed at
 any point (Ctrl-C, `kill -9`, OOM), rerunning `veneer apply` converges to the same state as
@@ -56,7 +65,7 @@ a clean run. The container suite checks this on every distro.
 ```sh
 cargo test --workspace                 # unit + integration tests
 tests/containers/build-linux.sh        # static musl binary for containers
-tests/containers/run.sh                # ubuntu/debian/alpine/fedora, bake, compose, installer
+tests/containers/run.sh                # distros, bake, compose, installer, devcontainer, oci
 ```
 
 Design: [spec](docs/superpowers/specs/2026-11-03-veneer-design.md) ·

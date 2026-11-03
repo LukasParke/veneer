@@ -19,7 +19,27 @@ use util::{capture, digest, privileged, sh, succeeds, which};
 /// The process environment for commands veneer runs: host env + mise tool env (+ workspace env).
 pub fn command_env(plan: &Plan, dirs: &Dirs, workspace: bool) -> BTreeMap<String, String> {
     let mut env: BTreeMap<String, String> = std::env::vars().collect();
+    // Hooks may call `veneer` itself (e.g. devcontainer features): put this binary on PATH.
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+    {
+        let path = env.get("PATH").cloned().unwrap_or_default();
+        env.insert("PATH".into(), format!("{}:{path}", dir.display()));
+    }
     env.extend(mise::tool_env(dirs));
+    // containerEnv recorded by installed Dev Container Features (`${PATH}` expands).
+    let features: BTreeMap<String, String> = std::fs::read(dirs.state.join("features/env.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    for (k, v) in features {
+        let current = env.get(&k).cloned().unwrap_or_default();
+        let v = v
+            .replace(&format!("${{{k}}}"), &current)
+            .replace(&format!("${k}"), &current);
+        env.insert(k, v);
+    }
     if workspace {
         env.extend(plan.env.iter().map(|(k, v)| (k.clone(), v.clone())));
     }

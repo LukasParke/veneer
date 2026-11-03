@@ -8,7 +8,7 @@ use veneer_exec::{
     Events, ExecError, Journal, Lock, Runner, build_journal_path, workspace_journal_path,
 };
 use veneer_plan::{Dirs, Phase, Plan, PlanOptions, Step, plan};
-use veneer_resolve::{ResolveOptions, locate, resolve};
+use veneer_resolve::{ResolveOptions, resolve};
 use veneer_spec::{Spec, has_errors};
 
 use crate::render::render;
@@ -89,14 +89,12 @@ pub fn load(target: &Target, json: bool) -> Result<Loaded, ExitCode> {
         .and_then(|p| p.canonicalize())
         .map_err(|_| ExitCode::from(1))?;
     let dirs = Dirs::from_env();
-    let located = match target.spec.as_deref() {
-        Some(arg) if veneer_resolve::discover::is_remote(arg) => {
-            let mut remote =
-                veneer_resolve::remote::Remote::new(dirs.cache.clone(), None, target.update_lock);
-            veneer_resolve::remote::fetch(&mut remote, arg)
-        }
-        arg => locate(arg, &cwd),
-    };
+    let located = veneer_resolve::locate_any(
+        target.spec.as_deref(),
+        &cwd,
+        &dirs.cache,
+        target.update_lock,
+    );
     let entry = match located {
         Ok(p) => p,
         Err(d) => {
@@ -390,9 +388,14 @@ pub fn env(args: EnvArgs) -> ExitCode {
         Ok(p) => p,
         Err(code) => return code,
     };
+    // Everything veneer adds on top of the host environment: tools, features, workspace env.
+    let host: std::collections::BTreeMap<String, String> = std::env::vars().collect();
     let mut env: indexmap::IndexMap<String, String> =
-        veneer_steps::mise::tool_env(&l.dirs).into_iter().collect();
-    env.extend(plan.env.clone());
+        veneer_steps::command_env(&plan, &l.dirs, true)
+            .into_iter()
+            .filter(|(k, v)| host.get(k) != Some(v))
+            .collect();
+    env.sort_keys();
     let events = Events::new(
         false,
         if args.reveal {

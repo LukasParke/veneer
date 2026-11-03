@@ -2,6 +2,7 @@
 
 mod bake;
 mod check;
+mod feature;
 mod init;
 mod render;
 mod run;
@@ -45,6 +46,9 @@ enum Command {
     Lock(run::LockArgs),
     /// Scaffold .veneer/veneer.yaml from existing project files.
     Init(init::InitArgs),
+    /// Internal helpers used by generated steps.
+    #[command(hide = true, subcommand)]
+    Internal(feature::Internal),
 }
 
 fn main() -> ExitCode {
@@ -62,6 +66,7 @@ fn main() -> ExitCode {
         Command::Bake(args) => bake::run(args),
         Command::Lock(args) => run::lock(args),
         Command::Init(args) => init::run(args),
+        Command::Internal(cmd) => feature::run(cmd),
         Command::Schema => {
             print!("{}", veneer_spec::json_schema_string());
             ExitCode::SUCCESS

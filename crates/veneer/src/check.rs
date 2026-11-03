@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use serde_json::json;
-use veneer_resolve::{ResolveOptions, locate, overlay::to_yaml, resolve};
+use veneer_resolve::{ResolveOptions, overlay::to_yaml, resolve};
 use veneer_spec::{Severity, has_errors};
 
 use crate::render::{display_path, render};
@@ -37,7 +37,8 @@ pub fn run(args: CheckArgs) -> ExitCode {
     let cwd = std::env::current_dir()
         .and_then(|p| p.canonicalize())
         .expect("current directory is readable");
-    let entry = match locate(args.spec.as_deref(), &cwd) {
+    let cache = veneer_plan::Dirs::from_env().cache;
+    let entry = match veneer_resolve::locate_any(args.spec.as_deref(), &cwd, &cache, false) {
         Ok(p) => p,
         Err(diag) => {
             if args.json {

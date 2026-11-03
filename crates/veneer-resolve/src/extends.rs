@@ -187,6 +187,20 @@ pub fn load_layered(
         let Some(target) = locate_source(loader, &raw, &base_dir, &item, false) else {
             continue;
         };
+        if crate::devcontainer::is_devcontainer(&target.to_string_lossy()) {
+            let uri = suspect_source::Uri::from_path(&target)
+                .map(|u| u.to_string())
+                .unwrap_or_default();
+            match crate::devcontainer::to_node(&target, &uri) {
+                Ok((l, warnings)) => {
+                    loader.documents.insert(uri);
+                    loader.diagnostics.extend(warnings);
+                    merge(&mut acc, l, &[]);
+                }
+                Err(d) => loader.diagnostics.push(d.at(item.span.clone())),
+            }
+            continue;
+        }
         if let Some(l) = layer(loader, &target, &raw, &item, chain) {
             merge(&mut acc, l, &[]);
         }

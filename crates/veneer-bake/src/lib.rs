@@ -102,16 +102,31 @@ fn serde_like_json(s: &str) -> String {
     out
 }
 
+/// Everything one bake needs besides the build context directory.
+pub struct BakeJob<'a> {
+    pub base: &'a str,
+    pub plan: &'a Plan,
+    pub entry: &'a Path,
+    pub documents: &'a [PathBuf],
+    pub inputs: &'a BakeInputs,
+    pub veneer_bin: &'a Path,
+    /// Overlay files (absolute, inside the project) passed to every in-image invocation.
+    pub overlays: &'a [PathBuf],
+    pub sets: &'a [(String, String)],
+}
+
 /// Generates the Containerfile and stages the build context in `ctx`.
-pub fn prepare(
-    base: &str,
-    plan: &Plan,
-    entry: &Path,
-    documents: &[PathBuf],
-    inputs: &BakeInputs,
-    veneer_bin: &Path,
-    ctx: &Path,
-) -> Result<String> {
+pub fn prepare(job: &BakeJob<'_>, ctx: &Path) -> Result<String> {
+    let BakeJob {
+        base,
+        plan,
+        entry,
+        documents,
+        inputs,
+        veneer_bin,
+        overlays,
+        sets,
+    } = *job;
     let project = &plan.project_root;
     let entry_rel = entry
         .strip_prefix(project)
@@ -136,9 +151,27 @@ pub fn prepare(
         g
     };
     let has = |g: &str| groups.contains(&g);
+    // `--overlay`/`--set` must reach every in-image invocation, or the image would be built
+    // from a different spec than the one the user baked.
+    let mut extra = String::new();
+    for o in overlays {
+        let rel = o.strip_prefix(project).map_err(|_| {
+            ExecError::failed(format!(
+                "overlay {} must be inside the project root to bake",
+                o.display()
+            ))
+        })?;
+        extra.push_str(&format!(
+            ", \"--overlay\", {}",
+            q(&format!("{PROJECT_DIR}/{}", rel.display()))
+        ));
+    }
+    for (k, v) in sets {
+        extra.push_str(&format!(", \"--set\", {}", q(&format!("{k}={v}"))));
+    }
     let run = |group: &str| {
         format!(
-            "RUN [\"veneer\", \"apply\", \"--phase\", \"build\", \"--only\", {}, {}]\n",
+            "RUN [\"veneer\", \"apply\", \"--phase\", \"build\", \"--only\", {}{extra}, {}]\n",
             q(group),
             q(&entry_rel)
         )
@@ -157,6 +190,7 @@ pub fn prepare(
         .cloned()
         .collect();
     early.extend(inputs.early.iter().cloned());
+    early.extend(overlays.iter().cloned());
     stage(project, &early, &ctx.join("ctx-spec"))?;
     cf.push_str(&format!(
         "COPY ctx-spec/ {PROJECT_DIR}/\nWORKDIR {PROJECT_DIR}\n"
@@ -184,11 +218,11 @@ pub fn prepare(
     }
     // Final pass: build hooks, and re-verifies every earlier group (all skip when intact).
     cf.push_str(&format!(
-        "RUN [\"veneer\", \"apply\", \"--phase\", \"build\", {}]\n",
+        "RUN [\"veneer\", \"apply\", \"--phase\", \"build\"{extra}, {}]\n",
         q(&entry_rel)
     ));
     cf.push_str(&format!(
-        "ENTRYPOINT [\"veneer\", \"entrypoint\", {}, \"--\"]\nCMD [\"sh\"]\n",
+        "ENTRYPOINT [\"veneer\", \"entrypoint\"{extra}, {}, \"--\"]\nCMD [\"sh\"]\n",
         q(&format!("{PROJECT_DIR}/{entry_rel}"))
     ));
     std::fs::write(ctx.join("Containerfile"), &cf).map_err(|e| ExecError::failed(e.to_string()))?;

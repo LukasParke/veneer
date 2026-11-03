@@ -88,6 +88,10 @@ enum Source {
     Https {
         url: String,
     },
+    Oci {
+        reference: String,
+        path: Option<String>,
+    },
 }
 
 fn parse(source: &str) -> Option<Source> {
@@ -122,6 +126,13 @@ fn parse(source: &str) -> Option<Source> {
             path,
             git_ref,
         });
+    }
+    if let Some(rest) = source.strip_prefix("oci://") {
+        let (reference, path) = match rest.split_once("//") {
+            Some((r, p)) => (r.to_string(), Some(p.to_string())),
+            None => (rest.to_string(), None),
+        };
+        return Some(Source::Oci { reference, path });
     }
     if source.starts_with("https://") || source.starts_with("http://") {
         return Some(Source::Https {
@@ -231,7 +242,7 @@ pub fn fetch(remote: &mut Remote, source: &str) -> Result<PathBuf, Diagnostic> {
     let parsed = parse(source).ok_or_else(|| {
         Diagnostic::error(
             codes::REMOTE_UNSUPPORTED,
-            format!("unsupported remote source `{source}` (use github:, git+…, or https:)"),
+            format!("unsupported remote source `{source}` (use github:, git+…, https:, or oci://)"),
         )
     })?;
     let pinned = if remote.update {
@@ -252,6 +263,22 @@ pub fn fetch(remote: &mut Remote, source: &str) -> Result<PathBuf, Diagnostic> {
             (dir.join(rel), Some(commit))
         }
         Source::Https { url } => (fetch_https(&remote.cache, url).map_err(err)?, None),
+        Source::Oci { reference, path } => {
+            let mut r = crate::oci::Reference::parse(reference).map_err(err)?;
+            if let Some(d) = pinned.as_ref().and_then(|p| p.commit.clone()) {
+                r.reference = d; // pull exactly the pinned manifest
+            }
+            let dir = crate::oci::cache_dir(&remote.cache, &r);
+            let digest = crate::oci::pull(&r, &dir).map_err(err)?;
+            let rel = path.clone().unwrap_or_else(|| {
+                if dir.join(".veneer/veneer.yaml").is_file() {
+                    ".veneer/veneer.yaml".into()
+                } else {
+                    "veneer.yaml".into()
+                }
+            });
+            (dir.join(rel), Some(digest))
+        }
     };
     if !path.is_file() {
         return Err(err(format!(
@@ -349,6 +376,13 @@ mod tests {
                 url: "https://x.dev/e.yaml".into()
             })
         );
-        assert_eq!(parse("oci://x"), None);
+        assert_eq!(
+            parse("oci://ghcr.io/acme/envs:v1//base.yaml"),
+            Some(Source::Oci {
+                reference: "ghcr.io/acme/envs:v1".into(),
+                path: Some("base.yaml".into())
+            })
+        );
+        assert_eq!(parse("ftp://x"), None);
     }
 }

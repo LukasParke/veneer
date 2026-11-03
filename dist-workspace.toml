@@ -13,6 +13,8 @@ installers = ["shell", "npm", "homebrew"]
 targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"]
 # Path that installers should place binaries in
 install-path = "CARGO_HOME"
+# Extra publish jobs (after the release is created)
+publish-jobs = ["npm", "./publish-image"]
 # Where to host releases
 hosting = "github"
 # Whether to install an updater program

@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use veneer_bake::{BakeOptions, Target, build, prepare};
+use veneer_bake::{BakeJob, BakeOptions, Target, build, prepare};
 use veneer_plan::bake_inputs;
 
 use crate::run::{Target as SpecTarget, fail, load, make_plan};
@@ -76,15 +76,24 @@ pub fn run(args: BakeArgs) -> ExitCode {
         .context
         .clone()
         .unwrap_or_else(|| tmp.path().to_path_buf());
-    if let Err(e) = prepare(
-        &base,
-        &plan,
-        &l.entry,
-        &l.documents,
-        &inputs,
-        &veneer_bin,
-        &ctx,
-    ) {
+    let cwd = std::env::current_dir().expect("cwd");
+    let overlays: Vec<PathBuf> = args
+        .target
+        .overlays
+        .iter()
+        .map(|o| cwd.join(o).canonicalize().unwrap_or_else(|_| cwd.join(o)))
+        .collect();
+    let job = BakeJob {
+        base: &base,
+        plan: &plan,
+        entry: &l.entry,
+        documents: &l.documents,
+        inputs: &inputs,
+        veneer_bin: &veneer_bin,
+        overlays: &overlays,
+        sets: &args.target.sets,
+    };
+    if let Err(e) = prepare(&job, &ctx) {
         return fail(e.exit, &e.message, false);
     }
     let name = plan

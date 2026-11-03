@@ -11,13 +11,15 @@
 #   bake     OCI bake, entrypoint, layer caching, bake/apply parity, rootfs
 #   compose  compose services through the host Docker socket
 #   install  the one-command installer against a local release server
+#   devcontainer  extends a devcontainer.json: env, lifecycle hooks, a local and a ghcr.io Feature
+#   oci      oci:// spec sources and extends through a local registry (pushed with oras)
 set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/../.." && pwd)"
 bin="$repo/target/linux/release/veneer"
 host_bin="${HOST_VENEER:-$repo/target/debug/veneer}"
-SUITES="${SUITES:-distros bake compose install}"
+SUITES="${SUITES:-distros bake compose install devcontainer oci}"
 DISTROS="${DISTROS:-ubuntu:24.04 debian:12 alpine:3.20 fedora:41}"
 TOKEN="tok-s3cret-value"
 
@@ -138,6 +140,7 @@ suite_bake() {
   fi
   echo "touch" >"$proj/NOTES.md"
   check "bake: rebuild after an unrelated edit reuses cached layers" sh -c "'$host_bin' bake '$proj' --veneer-bin '$bin' --tag '$tag' && grep -c CACHED \$(ls -t '$work/host-state/logs'/bake-*.log | head -n1) | awk '{exit !(\$1 >= 5)}'"
+  check "bake: --overlay reaches every in-image step (node in image)" sh -c "'$host_bin' bake '$proj' --veneer-bin '$bin' --tag veneer-ct/fixture:node --overlay '$proj/.veneer/overlays/node.overlay.yaml' && docker run --rm -e TEST_API_TOKEN=$TOKEN -v $work/upstream.git:/srv/upstream.git:ro veneer-ct/fixture:node sh -c 'node --version && test -f /opt/veneer/project/node_modules/is-number/package.json' | grep -q v22.11.0"
   check "bake: rootfs ext4 image" sh -c "'$host_bin' bake '$proj' --veneer-bin '$bin' --tag '$tag' --target rootfs -o '$work/rootfs.ext4' && file '$work/rootfs.ext4' | grep -qi ext4"
   unset VENEER_STATE_DIR
 }
@@ -179,6 +182,45 @@ suite_install() {
   check "install: one command installs, verifies, and runs veneer" sh -c "docker exec $name sh -c 'apt-get -qq update >/dev/null && apt-get -qq install -y curl xz-utils >/dev/null && curl -fsSL http://127.0.0.1:8765/install.sh | VENEER_RELEASE_URL=http://127.0.0.1:8765 sh -s -- check /fixture' | grep -q '^ok '"
   check "install: tampered archive is rejected" sh -c "docker exec $name sh -c 'mkdir -p /bad && cp -r /release/. /bad/ && echo junk >> /bad/veneer-$target.tar.xz && cd /bad && (python3 -m http.server 8766 >/dev/null 2>&1 &) && sleep 1 && ! curl -fsSL http://127.0.0.1:8766/install.sh | VENEER_RELEASE_URL=http://127.0.0.1:8766 VENEER_INSTALL_DIR=/tmp/v sh -s -- --version'"
   docker rm -f "$name" >/dev/null
+}
+
+# ------------------------------------------------------------------ devcontainer
+suite_devcontainer() {
+  echo "▸ devcontainer"
+  local name="veneer-ct-devcontainer"
+  start "$name" ubuntu:24.04
+  docker cp "$here/devcontainer-fixture" "$name:/dc" >/dev/null
+  check "devcontainer: apply installs features and runs lifecycle hooks" sh -c "docker exec $name veneer apply /dc --json | tee $logs/dc.ndjson | grep -q '\"event\":\"run.done\",\"ok\":true'"
+  check "devcontainer: local feature with options and containerEnv PATH" sh -c "docker exec $name veneer exec /dc -- hello | grep -q 'hi from a feature (loud=false, user=root)'"
+  check "devcontainer: ghcr.io feature (github-cli) installed over OCI" sh -c "docker exec $name veneer exec /dc -- gh --version | grep -q 'gh version'"
+  check "devcontainer: containerEnv mapped, \${containerWorkspaceFolder} rendered" sh -c "docker exec $name veneer env /dc --format dotenv | tee $logs/dc-env.txt | grep -q '^FROM_DEVCONTAINER=yes' && grep -q '^WS=/work/dc' $logs/dc-env.txt && grep -q '^HELLO_HOME=/opt/hello' $logs/dc-env.txt"
+  check "devcontainer: onCreate (build) and postCreate (workspace) commands ran" sh -c "docker exec $name sh -c 'grep -q created /tmp/oncreate.txt && grep -q post /work/dc/postcreate.txt'"
+  check "devcontainer: second apply is a no-op" sh -c "docker exec $name veneer apply /dc --json | grep -q '\"applied\":0'"
+  docker rm -f "$name" >/dev/null
+}
+
+# ------------------------------------------------------------------ oci
+suite_oci() {
+  echo "▸ oci"
+  local net="veneer-ct-net" reg="veneer-ct-registry" name="veneer-ct-oci"
+  docker network create "$net" >/dev/null 2>&1
+  docker rm -f "$reg" >/dev/null 2>&1
+  docker run -d --name "$reg" --network "$net" registry:2 >/dev/null
+  mkdir -p "$work/ocispec/.veneer"
+  printf 'version: 1\nextends: [./base.yaml]\nenv:\n  FROM_OCI: "yes"\nworkspace:\n  files:\n    - { src: hello.txt.j2, dest: hello.txt }\n' >"$work/ocispec/.veneer/veneer.yaml"
+  printf 'version: 1\nenv:\n  LAYER: base\n' >"$work/ocispec/.veneer/base.yaml"
+  printf 'hello {{ workspace.id }}\n' >"$work/ocispec/.veneer/hello.txt.j2"
+  sleep 2
+  check "oci: oras pushes the spec directory" docker run --rm --network "$net" -v "$work/ocispec:/w" -w /w ghcr.io/oras-project/oras:v1.2.0 push --plain-http "$reg:5000/envs/app:v1" .veneer
+  check "oci: oras pushes a single-file base layer" docker run --rm --network "$net" -v "$work/ocispec/.veneer:/w" -w /w ghcr.io/oras-project/oras:v1.2.0 push --plain-http "$reg:5000/envs/base:v1" base.yaml
+  start "$name" alpine:3.20 --network "$net" -e VENEER_OCI_INSECURE=1
+  check "oci: apply oci:// spec (with its own extends and template file)" sh -c "docker exec $name veneer apply oci://$reg:5000/envs/app:v1 --id o1 --json | grep -q '\"ok\":true' && docker exec $name sh -c 'grep -q \"hello o1\" /var/lib/veneer/roots/o1/hello.txt && veneer env oci://$reg:5000/envs/app:v1 --id o1 --format dotenv | grep -q LAYER=base'"
+  docker exec "$name" sh -c "mkdir -p /p/.veneer && printf 'version: 1\nextends: [\"oci://$reg:5000/envs/base:v1//base.yaml\"]\n' > /p/.veneer/veneer.yaml"
+  check "oci: extends oci:// is pinned by manifest digest in veneer.lock" sh -c "docker exec $name veneer check /p && docker exec $name grep -q '\"commit\": \"sha256:' /p/.veneer/veneer.lock"
+  docker run --rm --network "$net" -v "$work/ocispec/.veneer:/w" -w /w alpine:3.20 sh -c "printf 'version: 1\nenv:\n  LAYER: changed\n' > /w/base.yaml" >/dev/null
+  check "oci: upstream retag keeps resolving the pinned digest" sh -c "docker run --rm --network $net -v $work/ocispec/.veneer:/w -w /w ghcr.io/oras-project/oras:v1.2.0 push --plain-http $reg:5000/envs/base:v1 base.yaml >/dev/null && docker exec $name sh -c 'cd /p && veneer env --format dotenv | grep -q LAYER=base'"
+  docker rm -f "$name" "$reg" >/dev/null
+  docker network rm "$net" >/dev/null 2>&1
 }
 
 for s in $SUITES; do "suite_$s"; done

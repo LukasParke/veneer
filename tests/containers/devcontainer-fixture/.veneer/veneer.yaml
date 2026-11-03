@@ -1,0 +1,5 @@
+version: 1
+extends: [../.devcontainer/devcontainer.json]
+packages: [ca-certificates, curl]
+workspace:
+  root: /work/dc

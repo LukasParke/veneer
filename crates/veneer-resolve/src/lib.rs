@@ -5,14 +5,33 @@ use std::path::{Path, PathBuf};
 use suspect_ref::WorkspaceBuilder;
 use veneer_spec::{Diagnostic, Node, Spec, codes, from_node, has_errors, sort_diagnostics};
 
+pub mod devcontainer;
 pub mod discover;
 pub mod extends;
 pub mod load;
 pub mod merge;
+pub mod oci;
 pub mod overlay;
 pub mod remote;
 
 pub use discover::locate;
+
+/// Like [`locate`], but fetches remote sources (`github:`, `git+`, `https:`, `oci://`) into
+/// `cache` first.
+pub fn locate_any(
+    arg: Option<&str>,
+    cwd: &Path,
+    cache: &Path,
+    update_lock: bool,
+) -> Result<PathBuf, Diagnostic> {
+    match arg {
+        Some(a) if discover::is_remote(a) => {
+            let mut r = remote::Remote::new(cache.to_path_buf(), None, update_lock);
+            remote::fetch(&mut r, a)
+        }
+        other => locate(other, cwd),
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct ResolveOptions {

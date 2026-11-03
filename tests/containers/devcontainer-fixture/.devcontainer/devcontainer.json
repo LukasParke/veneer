@@ -1,0 +1,15 @@
+// Container test fixture: a stock devcontainer.json consumed by veneer.
+{
+  "image": "ubuntu:24.04",
+  "containerEnv": {
+    "FROM_DEVCONTAINER": "yes",
+    "WS": "${containerWorkspaceFolder}",
+  },
+  "features": {
+    "./features/hello": { "greeting": "hi from a feature" },
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+  },
+  "onCreateCommand": "echo created > /tmp/oncreate.txt",
+  "postCreateCommand": ["sh", "-c", "echo post > postcreate.txt"],
+  "forwardPorts": [3000],
+}
