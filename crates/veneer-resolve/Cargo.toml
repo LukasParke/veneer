@@ -16,6 +16,10 @@ suspect-syntax.workspace = true
 suspect-low.workspace = true
 suspect-ref.workspace = true
 suspect-overlay.workspace = true
+serde.workspace = true
+ureq.workspace = true
+sha2.workspace = true
+hex.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

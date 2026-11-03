@@ -10,6 +10,7 @@ pub mod extends;
 pub mod load;
 pub mod merge;
 pub mod overlay;
+pub mod remote;
 
 pub use discover::locate;
 
@@ -17,6 +18,10 @@ pub use discover::locate;
 pub struct ResolveOptions {
     /// Overlay files, applied in order after layering.
     pub overlays: Vec<PathBuf>,
+    /// Enables remote `extends`/`use` sources, cached here and pinned in `veneer.lock`.
+    pub remote_cache: Option<PathBuf>,
+    /// Re-pin remote sources instead of enforcing the lock.
+    pub update_lock: bool,
 }
 
 #[derive(Debug, Default)]
@@ -44,7 +49,18 @@ pub fn resolve(entry: &Path, opts: &ResolveOptions) -> Resolved {
         }
     };
     let mut loader = load::Loader::new(&ws);
+    if let Some(cache) = &opts.remote_cache {
+        // Only local projects get a lock file; remote entries are pinned by their source.
+        let lock = (!entry.starts_with(cache)).then(|| entry.with_file_name("veneer.lock"));
+        loader.remote = Some(remote::Remote::new(cache.clone(), lock, opts.update_lock));
+    }
     let tree = extends::load_layered(&mut loader, entry, &mut Vec::new());
+    if let Some(r) = loader.remote.as_mut()
+        && !has_errors(&loader.diagnostics)
+        && let Err(d) = r.save()
+    {
+        loader.diagnostics.push(d);
+    }
     out.documents = loader.documents.iter().cloned().collect();
     out.diagnostics.append(&mut loader.diagnostics);
 
@@ -60,15 +76,6 @@ pub fn resolve(entry: &Path, opts: &ResolveOptions) -> Resolved {
                     for v in spec.validate() {
                         out.diagnostics.push(
                             Diagnostic::error(v.code, v.message).at(tree.nearest_span(&v.pointer)),
-                        );
-                    }
-                    if !spec.modules.is_empty() {
-                        out.diagnostics.push(
-                            Diagnostic::warning(
-                                codes::MODULES_UNSUPPORTED,
-                                "`use:` modules are not supported yet and were ignored",
-                            )
-                            .at(tree.nearest_span("/use")),
                         );
                     }
                     out.spec = Some(spec);

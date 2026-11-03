@@ -21,6 +21,8 @@ pub struct Loader<'ws> {
     checked: HashMap<usize, bool>,
     pub diagnostics: Vec<Diagnostic>,
     pub documents: BTreeSet<String>,
+    /// Remote fetching + lock; `None` disables remote sources.
+    pub remote: Option<crate::remote::Remote>,
 }
 
 pub(crate) fn span_of(uri: &Uri, node: NodeRef<'_>) -> Span {
@@ -39,6 +41,7 @@ impl<'ws> Loader<'ws> {
     pub fn new(ws: &'ws Workspace) -> Self {
         Self {
             ws,
+            remote: None,
             stack: Vec::new(),
             checked: HashMap::new(),
             diagnostics: Vec::new(),

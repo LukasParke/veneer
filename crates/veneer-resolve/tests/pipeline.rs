@@ -45,10 +45,7 @@ fn semantic_phase_and_module_findings_are_combined_and_sorted() {
     )]);
     let r = resolve(&entry, &ResolveOptions::default());
     let got: Vec<&str> = r.diagnostics.iter().map(|d| d.code).collect();
-    assert_eq!(
-        got,
-        vec![codes::VERSION, codes::MODULES_UNSUPPORTED, codes::PHASE]
-    );
+    assert_eq!(got, vec![codes::VERSION, codes::PHASE]);
 }
 
 #[test]

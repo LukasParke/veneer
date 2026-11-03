@@ -1,0 +1,9 @@
+# Built-in module: veneer/harness/codex@1
+# Installs the OpenAI Codex CLI through mise (npm backend).
+version: 1
+vars:
+  node_version: "22"
+  codex_version: latest
+tools:
+  node: "{{ vars.node_version }}"
+  "npm:@openai/codex": "{{ vars.codex_version }}"

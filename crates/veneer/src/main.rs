@@ -40,6 +40,8 @@ enum Command {
     Down(run::DownArgs),
     /// Bake the build phase into an OCI image or a microVM rootfs.
     Bake(bake::BakeArgs),
+    /// Pin remote sources in .veneer/veneer.lock.
+    Lock(run::LockArgs),
 }
 
 fn main() -> ExitCode {
@@ -55,6 +57,7 @@ fn main() -> ExitCode {
         Command::Entrypoint(args) => run::entrypoint(args),
         Command::Down(args) => run::down(args),
         Command::Bake(args) => bake::run(args),
+        Command::Lock(args) => run::lock(args),
         Command::Schema => {
             print!("{}", veneer_spec::json_schema_string());
             ExitCode::SUCCESS

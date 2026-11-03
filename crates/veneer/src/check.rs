@@ -52,7 +52,14 @@ pub fn run(args: CheckArgs) -> ExitCode {
         }
     };
     let overlays = args.overlays.iter().map(|p| cwd.join(p)).collect();
-    let resolved = resolve(&entry, &ResolveOptions { overlays });
+    let resolved = resolve(
+        &entry,
+        &ResolveOptions {
+            overlays,
+            remote_cache: Some(veneer_plan::Dirs::from_env().cache),
+            update_lock: false,
+        },
+    );
     let failed = has_errors(&resolved.diagnostics);
     let entry_shown = display_path(&entry, &cwd);
 

@@ -33,6 +33,9 @@ pub struct Target {
     /// Overlay file to apply (repeatable, in order).
     #[arg(long = "overlay", value_name = "FILE")]
     pub overlays: Vec<PathBuf>,
+    /// Re-pin remote sources in veneer.lock instead of enforcing it.
+    #[arg(long, hide = true)]
+    pub update_lock: bool,
 }
 
 fn parse_set(s: &str) -> Result<(String, String), String> {
@@ -86,7 +89,15 @@ pub fn load(target: &Target, json: bool) -> Result<Loaded, ExitCode> {
         .and_then(|p| p.canonicalize())
         .map_err(|_| ExitCode::from(1))?;
     let dirs = Dirs::from_env();
-    let entry = match locate(target.spec.as_deref(), &cwd) {
+    let located = match target.spec.as_deref() {
+        Some(arg) if veneer_resolve::discover::is_remote(arg) => {
+            let mut remote =
+                veneer_resolve::remote::Remote::new(dirs.cache.clone(), None, target.update_lock);
+            veneer_resolve::remote::fetch(&mut remote, arg)
+        }
+        arg => locate(arg, &cwd),
+    };
+    let entry = match located {
         Ok(p) => p,
         Err(d) => {
             if json {
@@ -101,7 +112,14 @@ pub fn load(target: &Target, json: bool) -> Result<Loaded, ExitCode> {
         }
     };
     let overlays = target.overlays.iter().map(|p| cwd.join(p)).collect();
-    let resolved = resolve(&entry, &ResolveOptions { overlays });
+    let resolved = resolve(
+        &entry,
+        &ResolveOptions {
+            overlays,
+            remote_cache: Some(dirs.cache.clone()),
+            update_lock: target.update_lock,
+        },
+    );
     if !resolved.diagnostics.is_empty() {
         if json {
             for d in &resolved.diagnostics {
@@ -468,4 +486,29 @@ pub fn down(args: DownArgs) -> ExitCode {
         eprintln!("stopped services for {}", plan.workspace_id);
     }
     ExitCode::SUCCESS
+}
+
+#[derive(Debug, clap::Args)]
+pub struct LockArgs {
+    #[command(flatten)]
+    pub target: Target,
+    /// Re-pin every remote source to what its ref points at now.
+    #[arg(long)]
+    pub update: bool,
+}
+
+pub fn lock(mut args: LockArgs) -> ExitCode {
+    args.target.update_lock = args.update;
+    match load(&args.target, false) {
+        Ok(l) => {
+            let lock = l.entry.with_file_name("veneer.lock");
+            if lock.is_file() {
+                eprintln!("✓ {}", lock.display());
+            } else {
+                eprintln!("no remote sources; nothing to lock");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(code) => code,
+    }
 }
