@@ -2,6 +2,7 @@
 
 mod bake;
 mod check;
+mod init;
 mod render;
 mod run;
 
@@ -42,6 +43,8 @@ enum Command {
     Bake(bake::BakeArgs),
     /// Pin remote sources in .veneer/veneer.lock.
     Lock(run::LockArgs),
+    /// Scaffold .veneer/veneer.yaml from existing project files.
+    Init(init::InitArgs),
 }
 
 fn main() -> ExitCode {
@@ -58,6 +61,7 @@ fn main() -> ExitCode {
         Command::Down(args) => run::down(args),
         Command::Bake(args) => bake::run(args),
         Command::Lock(args) => run::lock(args),
+        Command::Init(args) => init::run(args),
         Command::Schema => {
             print!("{}", veneer_spec::json_schema_string());
             ExitCode::SUCCESS
