@@ -1,0 +1,32 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+veneer-spec = { path = "crates/veneer-spec" }
+veneer-template = { path = "crates/veneer-template" }
+veneer-resolve = { path = "crates/veneer-resolve" }
+
+suspect-source = { git = "https://github.com/LukasParke/suspect", rev = "f0156145fe4d3f3d138f9dd68cd0f96a977e92e4" }
+suspect-syntax = { git = "https://github.com/LukasParke/suspect", rev = "f0156145fe4d3f3d138f9dd68cd0f96a977e92e4" }
+suspect-low = { git = "https://github.com/LukasParke/suspect", rev = "f0156145fe4d3f3d138f9dd68cd0f96a977e92e4" }
+suspect-ref = { git = "https://github.com/LukasParke/suspect", rev = "f0156145fe4d3f3d138f9dd68cd0f96a977e92e4" }
+suspect-overlay = { git = "https://github.com/LukasParke/suspect", rev = "f0156145fe4d3f3d138f9dd68cd0f96a977e92e4" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+indexmap = { version = "2", features = ["serde"] }
+schemars = { version = "1", features = ["indexmap2"] }
+minijinja = "2"
+miette = { version = "7", features = ["fancy"] }
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"
+assert_cmd = "2"
+predicates = "3"
+insta = "1"
