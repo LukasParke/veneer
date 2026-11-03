@@ -1654,14 +1654,18 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "clap",
+ "indexmap",
  "insta",
  "miette",
  "predicates",
  "serde_json",
  "suspect-source",
  "tempfile",
+ "veneer-exec",
+ "veneer-plan",
  "veneer-resolve",
  "veneer-spec",
+ "veneer-steps",
 ]
 
 [[package]]

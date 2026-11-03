@@ -17,6 +17,10 @@ suspect-source.workspace = true
 clap.workspace = true
 miette.workspace = true
 serde_json.workspace = true
+veneer-plan.workspace = true
+veneer-exec.workspace = true
+veneer-steps.workspace = true
+indexmap.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true
