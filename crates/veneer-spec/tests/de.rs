@@ -53,10 +53,15 @@ fn deserializes_untagged_numbers_enums_options() {
 
 #[test]
 fn unknown_field_error_points_at_the_key() {
-    let n = Node::from_json(&json!({"version": 1, "tools": {}, "items": [{"name": "a", "nmae": "x"}]}));
+    let n =
+        Node::from_json(&json!({"version": 1, "tools": {}, "items": [{"name": "a", "nmae": "x"}]}));
     let err = from_node::<Outer>(&n).unwrap_err();
     assert_eq!(err.pointer.as_deref(), Some("/items/0/nmae"));
-    assert!(err.message.contains("unknown field `nmae`"), "{}", err.message);
+    assert!(
+        err.message.contains("unknown field `nmae`"),
+        "{}",
+        err.message
+    );
 }
 
 #[test]
@@ -71,5 +76,9 @@ fn missing_field_points_at_the_object() {
     let n = Node::from_json(&json!({"version": 1, "tools": {}, "items": [{}]}));
     let err = from_node::<Outer>(&n).unwrap_err();
     assert_eq!(err.pointer.as_deref(), Some("/items/0"));
-    assert!(err.message.contains("missing field `name`"), "{}", err.message);
+    assert!(
+        err.message.contains("missing field `name`"),
+        "{}",
+        err.message
+    );
 }

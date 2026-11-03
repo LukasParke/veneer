@@ -1,7 +1,13 @@
 use veneer_spec::{Diagnostic, Severity, Span, codes, has_errors, sort_diagnostics};
 
 fn span(uri: &str, start: usize) -> Option<Span> {
-    Some(Span { uri: uri.into(), start, end: start + 1, line: 1, col: start as u32 + 1 })
+    Some(Span {
+        uri: uri.into(),
+        start,
+        end: start + 1,
+        line: 1,
+        col: start as u32 + 1,
+    })
 }
 
 #[test]
@@ -31,6 +37,9 @@ fn sorting_is_by_uri_then_range_then_code_with_spanless_first() {
 
 #[test]
 fn has_errors_ignores_warnings() {
-    assert!(!has_errors(&[Diagnostic::warning(codes::OVERLAY_HINT, "w")]));
+    assert!(!has_errors(&[Diagnostic::warning(
+        codes::OVERLAY_HINT,
+        "w"
+    )]));
     assert!(has_errors(&[Diagnostic::error(codes::SCHEMA, "e")]));
 }

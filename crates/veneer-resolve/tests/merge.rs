@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use veneer_resolve::merge::merge;
 use veneer_spec::Node;
 
@@ -11,7 +11,10 @@ fn merged(base: Value, top: Value) -> Value {
 #[test]
 fn maps_deep_merge_and_later_wins() {
     assert_eq!(
-        merged(json!({"env": {"A": "1", "B": "2"}}), json!({"env": {"B": "3", "C": "4"}})),
+        merged(
+            json!({"env": {"A": "1", "B": "2"}}),
+            json!({"env": {"B": "3", "C": "4"}})
+        ),
         json!({"env": {"A": "1", "B": "3", "C": "4"}})
     );
 }
@@ -19,7 +22,10 @@ fn maps_deep_merge_and_later_wins() {
 #[test]
 fn null_deletes_inherited_keys_and_is_dropped_from_new_subtrees() {
     assert_eq!(
-        merged(json!({"env": {"A": "1", "B": "2"}}), json!({"env": {"A": null}, "new": {"x": null, "y": 1}})),
+        merged(
+            json!({"env": {"A": "1", "B": "2"}}),
+            json!({"env": {"A": null}, "new": {"x": null, "y": 1}})
+        ),
         json!({"env": {"B": "2"}, "new": {"y": 1}})
     );
 }
@@ -27,7 +33,10 @@ fn null_deletes_inherited_keys_and_is_dropped_from_new_subtrees() {
 #[test]
 fn ordinary_lists_replace() {
     assert_eq!(
-        merged(json!({"services": {"db": {"ports": ["1"]}}}), json!({"services": {"db": {"ports": ["2"]}}})),
+        merged(
+            json!({"services": {"db": {"ports": ["1"]}}}),
+            json!({"services": {"db": {"ports": ["2"]}}})
+        ),
         json!({"services": {"db": {"ports": ["2"]}}})
     );
 }
@@ -65,5 +74,8 @@ fn nested_concat_paths_use_their_identity_and_replace_in_place() {
 
 #[test]
 fn scalar_over_map_replaces() {
-    assert_eq!(merged(json!({"base": {"x": 1}}), json!({"base": "ubuntu"})), json!({"base": "ubuntu"}));
+    assert_eq!(
+        merged(json!({"base": {"x": 1}}), json!({"base": "ubuntu"})),
+        json!({"base": "ubuntu"})
+    );
 }

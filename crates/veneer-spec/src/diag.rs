@@ -32,11 +32,23 @@ pub struct Diagnostic {
 
 impl Diagnostic {
     pub fn error(code: &'static str, message: impl Into<String>) -> Self {
-        Self { code, severity: Severity::Error, message: message.into(), span: None, notes: Vec::new() }
+        Self {
+            code,
+            severity: Severity::Error,
+            message: message.into(),
+            span: None,
+            notes: Vec::new(),
+        }
     }
 
     pub fn warning(code: &'static str, message: impl Into<String>) -> Self {
-        Self { code, severity: Severity::Warning, message: message.into(), span: None, notes: Vec::new() }
+        Self {
+            code,
+            severity: Severity::Warning,
+            message: message.into(),
+            span: None,
+            notes: Vec::new(),
+        }
     }
 
     #[must_use]
@@ -52,7 +64,11 @@ impl Diagnostic {
     }
 
     fn sort_key(&self) -> (Option<(&str, usize, usize)>, &'static str, &str) {
-        (self.span.as_ref().map(|s| (s.uri.as_str(), s.start, s.end)), self.code, self.message.as_str())
+        (
+            self.span.as_ref().map(|s| (s.uri.as_str(), s.start, s.end)),
+            self.code,
+            self.message.as_str(),
+        )
     }
 }
 

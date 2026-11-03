@@ -137,7 +137,9 @@ impl Node {
     }
 
     pub fn pointer(&self, pointer: &str) -> Option<&Node> {
-        split_pointer(pointer).iter().try_fold(self, |node, tok| node.child(tok))
+        split_pointer(pointer)
+            .iter()
+            .try_fold(self, |node, tok| node.child(tok))
     }
 
     /// Span of the deepest node that exists along `pointer` (and has a span).
@@ -167,7 +169,9 @@ impl Node {
             Kind::Float(f) => serde_json::Number::from_f64(*f).map_or(Value::Null, Value::Number),
             Kind::Str(s) => Value::String(s.clone()),
             Kind::Array(a) => Value::Array(a.iter().map(Node::to_json).collect()),
-            Kind::Object(m) => Value::Object(m.iter().map(|(k, v)| (k.clone(), v.to_json())).collect()),
+            Kind::Object(m) => {
+                Value::Object(m.iter().map(|(k, v)| (k.clone(), v.to_json())).collect())
+            }
         }
     }
 
@@ -182,7 +186,11 @@ impl Node {
             },
             Value::String(s) => Kind::Str(s.clone()),
             Value::Array(a) => Kind::Array(a.iter().map(Node::from_json).collect()),
-            Value::Object(m) => Kind::Object(m.iter().map(|(k, v)| (k.clone(), Node::from_json(v))).collect()),
+            Value::Object(m) => Kind::Object(
+                m.iter()
+                    .map(|(k, v)| (k.clone(), Node::from_json(v)))
+                    .collect(),
+            ),
         };
         Self::new(kind)
     }

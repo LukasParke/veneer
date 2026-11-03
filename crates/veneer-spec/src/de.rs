@@ -26,7 +26,10 @@ impl std::error::Error for DeError {}
 
 impl de::Error for DeError {
     fn custom<T: fmt::Display>(msg: T) -> Self {
-        Self { pointer: None, message: msg.to_string() }
+        Self {
+            pointer: None,
+            message: msg.to_string(),
+        }
     }
 }
 
@@ -39,7 +42,11 @@ fn at(mut err: DeError, pointer: &str) -> DeError {
 }
 
 pub fn from_node<T: de::DeserializeOwned>(node: &Node) -> Result<T, DeError> {
-    T::deserialize(NodeDe { node, pointer: String::new() }).map_err(|e| at(e, ""))
+    T::deserialize(NodeDe {
+        node,
+        pointer: String::new(),
+    })
+    .map_err(|e| at(e, ""))
 }
 
 struct NodeDe<'a> {
@@ -58,14 +65,25 @@ impl<'de> de::Deserializer<'de> for NodeDe<'_> {
             Kind::Int(i) => visitor.visit_i64(*i),
             Kind::Float(f) => visitor.visit_f64(*f),
             Kind::Str(s) => visitor.visit_str(s),
-            Kind::Array(items) => visitor.visit_seq(Seq { items: items.iter().enumerate(), pointer: self.pointer }),
-            Kind::Object(map) => visitor.visit_map(Map { iter: map.iter(), value: None, pointer: self.pointer }),
+            Kind::Array(items) => visitor.visit_seq(Seq {
+                items: items.iter().enumerate(),
+                pointer: self.pointer,
+            }),
+            Kind::Object(map) => visitor.visit_map(Map {
+                iter: map.iter(),
+                value: None,
+                pointer: self.pointer,
+            }),
         };
         result.map_err(|e| at(e, &pointer))
     }
 
     fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
-        if self.node.is_null() { visitor.visit_none() } else { visitor.visit_some(self) }
+        if self.node.is_null() {
+            visitor.visit_none()
+        } else {
+            visitor.visit_some(self)
+        }
     }
 
     fn deserialize_enum<V: Visitor<'de>>(
@@ -82,7 +100,11 @@ impl<'de> de::Deserializer<'de> for NodeDe<'_> {
         }
     }
 
-    fn deserialize_newtype_struct<V: Visitor<'de>>(self, _name: &'static str, visitor: V) -> Result<V::Value, DeError> {
+    fn deserialize_newtype_struct<V: Visitor<'de>>(
+        self,
+        _name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, DeError> {
         visitor.visit_newtype_struct(self)
     }
 
@@ -101,10 +123,20 @@ struct Seq<'a> {
 impl<'de> SeqAccess<'de> for Seq<'_> {
     type Error = DeError;
 
-    fn next_element_seed<T: DeserializeSeed<'de>>(&mut self, seed: T) -> Result<Option<T::Value>, DeError> {
-        let Some((i, node)) = self.items.next() else { return Ok(None) };
+    fn next_element_seed<T: DeserializeSeed<'de>>(
+        &mut self,
+        seed: T,
+    ) -> Result<Option<T::Value>, DeError> {
+        let Some((i, node)) = self.items.next() else {
+            return Ok(None);
+        };
         let pointer = format!("{}/{i}", self.pointer);
-        seed.deserialize(NodeDe { node, pointer: pointer.clone() }).map(Some).map_err(|e| at(e, &pointer))
+        seed.deserialize(NodeDe {
+            node,
+            pointer: pointer.clone(),
+        })
+        .map(Some)
+        .map_err(|e| at(e, &pointer))
     }
 }
 
@@ -117,16 +149,29 @@ struct Map<'a> {
 impl<'de> MapAccess<'de> for Map<'_> {
     type Error = DeError;
 
-    fn next_key_seed<K: DeserializeSeed<'de>>(&mut self, seed: K) -> Result<Option<K::Value>, DeError> {
-        let Some((key, node)) = self.iter.next() else { return Ok(None) };
+    fn next_key_seed<K: DeserializeSeed<'de>>(
+        &mut self,
+        seed: K,
+    ) -> Result<Option<K::Value>, DeError> {
+        let Some((key, node)) = self.iter.next() else {
+            return Ok(None);
+        };
         let pointer = format!("{}/{}", self.pointer, escape_pointer_token(key));
         self.value = Some((node, pointer.clone()));
-        seed.deserialize(de::value::StrDeserializer::<DeError>::new(key)).map(Some).map_err(|e| at(e, &pointer))
+        seed.deserialize(de::value::StrDeserializer::<DeError>::new(key))
+            .map(Some)
+            .map_err(|e| at(e, &pointer))
     }
 
     fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, DeError> {
-        let (node, pointer) =
-            self.value.take().ok_or_else(|| de::Error::custom("map value requested before its key"))?;
-        seed.deserialize(NodeDe { node, pointer: pointer.clone() }).map_err(|e| at(e, &pointer))
+        let (node, pointer) = self
+            .value
+            .take()
+            .ok_or_else(|| de::Error::custom("map value requested before its key"))?;
+        seed.deserialize(NodeDe {
+            node,
+            pointer: pointer.clone(),
+        })
+        .map_err(|e| at(e, &pointer))
     }
 }

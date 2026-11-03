@@ -56,10 +56,15 @@ fn strip_nulls(mut node: Node) -> Node {
 
 /// Merges `top` over `base`. `path` is the logical location of `base` in the spec.
 pub fn merge(base: &mut Node, top: Node, path: &[String]) {
-    let Node { kind: top_kind, span: top_span } = top;
+    let Node {
+        kind: top_kind,
+        span: top_span,
+    } = top;
     match top_kind {
         Kind::Object(top_map) if matches!(base.kind, Kind::Object(_)) => {
-            let Kind::Object(base_map) = &mut base.kind else { unreachable!() };
+            let Kind::Object(base_map) = &mut base.kind else {
+                unreachable!()
+            };
             for (key, value) in top_map {
                 if value.is_null() {
                     base_map.shift_remove(&key);
@@ -76,10 +81,14 @@ pub fn merge(base: &mut Node, top: Node, path: &[String]) {
             }
         }
         Kind::Array(top_items) if is_concat(path) && matches!(base.kind, Kind::Array(_)) => {
-            let Kind::Array(base_items) = &mut base.kind else { unreachable!() };
+            let Kind::Array(base_items) = &mut base.kind else {
+                unreachable!()
+            };
             for item in top_items {
                 let existing = identity(path, &item).and_then(|id| {
-                    base_items.iter().position(|e| identity(path, e).as_deref() == Some(id.as_str()))
+                    base_items
+                        .iter()
+                        .position(|e| identity(path, e).as_deref() == Some(id.as_str()))
                 });
                 match existing {
                     Some(i) => base_items[i] = item,

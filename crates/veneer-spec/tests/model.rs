@@ -1,5 +1,7 @@
 use serde_json::json;
-use veneer_spec::{codes, from_node, Hook, Node, Package, RepoMode, ServiceEntry, Spec, ToolVersion};
+use veneer_spec::{
+    Hook, Node, Package, RepoMode, ServiceEntry, Spec, ToolVersion, codes, from_node,
+};
 
 fn spec(v: serde_json::Value) -> Result<Spec, veneer_spec::DeError> {
     from_node(&Node::from_json(&v))
@@ -42,7 +44,10 @@ fn parses_the_full_design_example() {
     assert_eq!(s.modules.len(), 2);
     assert!(matches!(s.packages[1], Package::Import(_)));
     assert_eq!(s.tools["node"], ToolVersion::Int(22));
-    assert_eq!(s.workspace.as_ref().unwrap().repos[0].mode, RepoMode::Worktree);
+    assert_eq!(
+        s.workspace.as_ref().unwrap().repos[0].mode,
+        RepoMode::Worktree
+    );
     assert!(matches!(s.services["from"], ServiceEntry::Import(_)));
     assert!(matches!(s.hooks.build[0], Hook::Cmd(_)));
     assert!(s.validate().is_empty());
@@ -68,7 +73,11 @@ fn validate_reports_version_secret_and_service_problems() {
         "services": {"both": {"image": "x", "run": "y"}, "neither": {}}
     }))
     .unwrap();
-    let got: Vec<(&str, String)> = s.validate().into_iter().map(|v| (v.code, v.pointer)).collect();
+    let got: Vec<(&str, String)> = s
+        .validate()
+        .into_iter()
+        .map(|v| (v.code, v.pointer))
+        .collect();
     assert_eq!(
         got,
         vec![

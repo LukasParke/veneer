@@ -245,7 +245,10 @@ impl Spec {
             out.push(Violation {
                 code: codes::VERSION,
                 pointer: "/version".into(),
-                message: format!("unsupported spec version {}; this veneer supports version 1", self.version),
+                message: format!(
+                    "unsupported spec version {}; this veneer supports version 1",
+                    self.version
+                ),
             });
         }
         for (name, secret) in &self.secrets {
@@ -268,7 +271,9 @@ impl Spec {
                     out.push(Violation {
                         code: codes::SERVICE_KIND,
                         pointer: format!("/services/{}", escape_pointer_token(name)),
-                        message: format!("service `{name}` must set exactly one of `image` or `run`"),
+                        message: format!(
+                            "service `{name}` must set exactly one of `image` or `run`"
+                        ),
                     });
                 }
             }
