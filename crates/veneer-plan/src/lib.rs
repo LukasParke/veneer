@@ -373,11 +373,19 @@ pub fn plan(
 
     let rs = |s: &str| r.render(s).map_err(PlanError::spec);
     let mut steps = Vec::new();
+    // `--only` skips other groups *before* reading their files: bake layers copy in only
+    // the files their own group needs.
+    let want = |group: &str, id: &str| opts.only.as_deref().is_none_or(|o| o == group || o == id);
 
     if opts.build {
         // packages
         let mut names = Vec::new();
-        for (i, p) in spec.packages.iter().enumerate() {
+        for (i, p) in spec
+            .packages
+            .iter()
+            .enumerate()
+            .filter(|_| want("packages", "packages"))
+        {
             match p {
                 Package::Name(n) => names.push(rs(n)?),
                 Package::Import(f) => {
@@ -401,14 +409,14 @@ pub fn plan(
 
         // tools
         let mut tools = IndexMap::new();
-        for (name, v) in &spec.tools {
+        for (name, v) in spec.tools.iter().filter(|_| want("tools", "tools")) {
             if name == "from" {
                 let path =
                     normalize(base_dir(tree, "/tools/from", &project).join(rs(&tool_version(v))?));
                 tools.extend(adapters::tools_from(&path).map_err(PlanError::spec)?);
             }
         }
-        for (name, v) in &spec.tools {
+        for (name, v) in spec.tools.iter().filter(|_| want("tools", "tools")) {
             if name != "from" {
                 tools.insert(name.clone(), rs(&tool_version(v))?);
             }
@@ -427,6 +435,15 @@ pub fn plan(
         for (i, d) in spec.deps.iter().enumerate() {
             let manifest =
                 normalize(base_dir(tree, &format!("/deps/{i}/from"), &project).join(rs(&d.from)?));
+            let rel = manifest
+                .strip_prefix(&project)
+                .unwrap_or(&manifest)
+                .display()
+                .to_string();
+            let id = format!("deps:{rel}");
+            if !want(&id, &id) {
+                continue;
+            }
             if !manifest.is_file() {
                 return Err(PlanError::spec(format!(
                     "dependency manifest {} does not exist",
@@ -448,12 +465,6 @@ pub fn plan(
             let refs: Vec<&[u8]> = digest_parts.iter().map(Vec::as_slice).collect();
             let digest = hash(&refs);
             let dir = manifest.parent().unwrap().to_path_buf();
-            let rel = manifest
-                .strip_prefix(&project)
-                .unwrap_or(&manifest)
-                .display()
-                .to_string();
-            let id = format!("deps:{rel}");
             steps.push(step(
                 id.clone(),
                 id,
@@ -470,7 +481,7 @@ pub fn plan(
         }
 
         // images
-        if !spec.images.is_empty() {
+        if !spec.images.is_empty() && want("images", "images") {
             let refs = spec
                 .images
                 .iter()
@@ -487,6 +498,9 @@ pub fn plan(
 
         // build hooks
         for (i, h) in spec.hooks.build.iter().enumerate() {
+            if !want("hooks", &format!("hook.build:{i}")) {
+                continue;
+            }
             let (run, creates, unless) = hook_parts(h, &rs)?;
             let creates = creates.map(|c| project.join(c));
             steps.push(step(
@@ -767,4 +781,45 @@ fn hook_parts(
             f.unless.as_deref().map(rs).transpose()?,
         ),
     })
+}
+
+/// Files each bake layer needs, relative to the project root.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BakeInputs {
+    /// Files read by the `packages` and `tools` groups (`from:` imports).
+    pub early: Vec<PathBuf>,
+    /// Per dependency group: (group id, manifest, lockfile).
+    pub deps: Vec<(String, PathBuf, Option<PathBuf>)>,
+}
+
+/// Lists the project files bake must copy before each layer (absolute paths).
+pub fn bake_inputs(spec: &Spec, tree: &Node, entry: &Path) -> Result<BakeInputs, PlanError> {
+    let project = project_root(entry);
+    let mut out = BakeInputs::default();
+    for (i, p) in spec.packages.iter().enumerate() {
+        if let Package::Import(f) = p {
+            out.early.push(normalize(
+                base_dir(tree, &format!("/packages/{i}/from"), &project).join(&f.from),
+            ));
+        }
+    }
+    if let Some(v) = spec.tools.get("from") {
+        out.early.push(normalize(
+            base_dir(tree, "/tools/from", &project).join(tool_version(v)),
+        ));
+    }
+    for (i, d) in spec.deps.iter().enumerate() {
+        let manifest =
+            normalize(base_dir(tree, &format!("/deps/{i}/from"), &project).join(&d.from));
+        let rel = manifest
+            .strip_prefix(&project)
+            .unwrap_or(&manifest)
+            .display()
+            .to_string();
+        let lock = adapters::detect_manager(&manifest)
+            .ok()
+            .and_then(|(_, l)| l);
+        out.deps.push((format!("deps:{rel}"), manifest, lock));
+    }
+    Ok(out)
 }

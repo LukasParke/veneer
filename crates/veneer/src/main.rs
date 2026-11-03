@@ -1,5 +1,6 @@
 //! veneer: define agent workspace environments once; stage them anywhere.
 
+mod bake;
 mod check;
 mod render;
 mod run;
@@ -37,6 +38,8 @@ enum Command {
     Entrypoint(run::EntrypointArgs),
     /// Stop workspace services (and optionally remove the workspace).
     Down(run::DownArgs),
+    /// Bake the build phase into an OCI image or a microVM rootfs.
+    Bake(bake::BakeArgs),
 }
 
 fn main() -> ExitCode {
@@ -51,6 +54,7 @@ fn main() -> ExitCode {
         Command::Env(args) => run::env(args),
         Command::Entrypoint(args) => run::entrypoint(args),
         Command::Down(args) => run::down(args),
+        Command::Bake(args) => bake::run(args),
         Command::Schema => {
             print!("{}", veneer_spec::json_schema_string());
             ExitCode::SUCCESS

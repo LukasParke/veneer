@@ -1661,11 +1661,23 @@ dependencies = [
  "serde_json",
  "suspect-source",
  "tempfile",
+ "veneer-bake",
  "veneer-exec",
  "veneer-plan",
  "veneer-resolve",
  "veneer-spec",
  "veneer-steps",
+]
+
+[[package]]
+name = "veneer-bake"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "veneer-exec",
+ "veneer-plan",
+ "veneer-resolve",
+ "veneer-spec",
 ]
 
 [[package]]

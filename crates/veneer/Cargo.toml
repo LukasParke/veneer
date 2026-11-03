@@ -20,6 +20,8 @@ serde_json.workspace = true
 veneer-plan.workspace = true
 veneer-exec.workspace = true
 veneer-steps.workspace = true
+veneer-bake.workspace = true
+tempfile.workspace = true
 indexmap.workspace = true
 
 [dev-dependencies]

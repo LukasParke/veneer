@@ -1,0 +1,16 @@
+[package]
+name = "veneer-bake"
+description = "Bake veneer specs into OCI images and microVM root filesystems"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+veneer-plan.workspace = true
+veneer-exec.workspace = true
+veneer-spec.workspace = true
+tempfile.workspace = true
+
+[dev-dependencies]
+veneer-resolve.workspace = true

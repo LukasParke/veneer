@@ -61,6 +61,8 @@ pub struct ApplyArgs {
 
 pub struct Loaded {
     pub entry: PathBuf,
+    /// Every document read while resolving (absolute paths).
+    pub documents: Vec<PathBuf>,
     pub spec: Spec,
     pub tree: veneer_spec::Node,
     pub dirs: Dirs,
@@ -115,11 +117,17 @@ pub fn load(target: &Target, json: bool) -> Result<Loaded, ExitCode> {
         }
         return Err(ExitCode::from(2));
     }
+    let documents = resolved
+        .documents
+        .iter()
+        .filter_map(|u| suspect_source::Uri::parse(u).ok()?.as_path())
+        .collect();
     let (Some(spec), Some(tree)) = (resolved.spec, resolved.tree) else {
         return Err(ExitCode::from(2));
     };
     Ok(Loaded {
         entry,
+        documents,
         spec,
         tree,
         dirs,
