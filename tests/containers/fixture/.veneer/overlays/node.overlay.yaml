@@ -1,0 +1,11 @@
+# glibc distros only: add Node and a lockfile-driven npm install.
+overlay: 1.0.0
+info: { title: node, version: "1" }
+actions:
+  - target: $.tools
+    description: add node
+    update: { node: "22.11.0" }
+  - target: $
+    description: add npm deps
+    update:
+      deps: [{ from: ../package.json }]

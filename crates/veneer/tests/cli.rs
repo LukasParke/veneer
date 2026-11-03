@@ -155,10 +155,24 @@ fn init_scaffolds_from_existing_files_and_checks_clean() {
     let root = dir.path();
     std::fs::write(root.join(".tool-versions"), "jq 1.7.1\n").unwrap();
     std::fs::write(root.join("package.json"), "{}").unwrap();
-    std::fs::write(root.join("compose.yaml"), "services:\n  db:\n    image: postgres:16\n").unwrap();
-    veneer().current_dir(root).arg("init").assert().success().stderr(contains(".tool-versions"));
+    std::fs::write(
+        root.join("compose.yaml"),
+        "services:\n  db:\n    image: postgres:16\n",
+    )
+    .unwrap();
+    veneer()
+        .current_dir(root)
+        .arg("init")
+        .assert()
+        .success()
+        .stderr(contains(".tool-versions"));
     let spec = std::fs::read_to_string(root.join(".veneer/veneer.yaml")).unwrap();
-    assert!(spec.contains("from: ../.tool-versions") && spec.contains("from: ../package.json") && spec.contains("from: ../compose.yaml"), "{spec}");
+    assert!(
+        spec.contains("from: ../.tool-versions")
+            && spec.contains("from: ../package.json")
+            && spec.contains("from: ../compose.yaml"),
+        "{spec}"
+    );
     veneer().current_dir(root).arg("check").assert().success();
     veneer().current_dir(root).arg("init").assert().code(2);
 }

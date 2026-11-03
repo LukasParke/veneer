@@ -1,0 +1,31 @@
+# Container test fixture: exercises every step kind that works without a Docker daemon.
+version: 1
+base: ubuntu:24.04
+vars:
+  greeting: "hello from {{ os.distro }}"
+packages: [git, curl, python3]
+tools:
+  from: ../.tool-versions
+  "aqua:mikefarah/yq": "4.44.3"
+images: [busybox:1.36]
+secrets:
+  API_TOKEN: { from: env, var: TEST_API_TOKEN }
+env:
+  GREETING: "{{ vars.greeting }}"
+  API_TOKEN: "{{ secrets.API_TOKEN }}"
+workspace:
+  root: "/work/{{ workspace.id }}"
+  repos:
+    - { url: /srv/upstream.git, path: src, mode: clone, ref: main }
+    - { url: /srv/upstream.git, path: wt, mode: worktree }
+  files:
+    - { src: templates/app.env.j2, dest: app/.env, mode: "0600" }
+services:
+  web:
+    run: "python3 -m http.server $PORT --bind 127.0.0.1"
+    healthcheck: { http: "http://127.0.0.1:{{ workspace.ports.web }}/", interval: 250ms, retries: 60 }
+hooks:
+  build:
+    - { run: "jq --version > .jq-version", creates: .jq-version }
+  workspace:
+    - { run: "yq --version > yq.txt", creates: yq.txt }

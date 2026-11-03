@@ -547,7 +547,7 @@ pub fn plan(
                     .display()
                     .to_string();
                 }
-                let git_ref = repo.git_ref.as_deref().map(&rs).transpose()?;
+                let git_ref = repo.git_ref.as_deref().map(rs).transpose()?;
                 let path = rs(&repo.path)?;
                 let mode = match repo.mode {
                     veneer_spec::RepoMode::Clone => RepoMode::Clone,
@@ -644,8 +644,8 @@ pub fn plan(
                         .as_ref()
                         .map(|h| -> Result<Healthcheck, PlanError> {
                             Ok(Healthcheck {
-                                cmd: h.cmd.as_deref().map(&rs).transpose()?,
-                                http: h.http.as_deref().map(&rs).transpose()?,
+                                cmd: h.cmd.as_deref().map(rs).transpose()?,
+                                http: h.http.as_deref().map(rs).transpose()?,
                                 interval_ms: h
                                     .interval
                                     .as_deref()
