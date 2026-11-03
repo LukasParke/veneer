@@ -286,6 +286,9 @@ pub fn plan(
     opts: &PlanOptions,
 ) -> Result<Planned, PlanError> {
     let project = project_root(entry);
+    // Relative paths resolve against the declaring file; values without a source span
+    // (e.g. added by an overlay) resolve against the entry spec's directory.
+    let spec_dir = entry.parent().unwrap_or(&project).to_path_buf();
     let mut warnings = Vec::new();
     let mut r = Renderer::new();
     let id = opts.workspace_id.clone();
@@ -390,7 +393,8 @@ pub fn plan(
                 Package::Name(n) => names.push(rs(n)?),
                 Package::Import(f) => {
                     let path = normalize(
-                        base_dir(tree, &format!("/packages/{i}/from"), &project).join(rs(&f.from)?),
+                        base_dir(tree, &format!("/packages/{i}/from"), &spec_dir)
+                            .join(rs(&f.from)?),
                     );
                     names.extend(adapters::packages_from(&path).map_err(PlanError::spec)?);
                 }
@@ -412,7 +416,7 @@ pub fn plan(
         for (name, v) in spec.tools.iter().filter(|_| want("tools", "tools")) {
             if name == "from" {
                 let path =
-                    normalize(base_dir(tree, "/tools/from", &project).join(rs(&tool_version(v))?));
+                    normalize(base_dir(tree, "/tools/from", &spec_dir).join(rs(&tool_version(v))?));
                 tools.extend(adapters::tools_from(&path).map_err(PlanError::spec)?);
             }
         }
@@ -434,7 +438,7 @@ pub fn plan(
         // deps
         for (i, d) in spec.deps.iter().enumerate() {
             let manifest =
-                normalize(base_dir(tree, &format!("/deps/{i}/from"), &project).join(rs(&d.from)?));
+                normalize(base_dir(tree, &format!("/deps/{i}/from"), &spec_dir).join(rs(&d.from)?));
             let rel = manifest
                 .strip_prefix(&project)
                 .unwrap_or(&manifest)
@@ -542,7 +546,7 @@ pub fn plan(
                 let looks_remote = url.contains("://") || url.starts_with("git@");
                 if !looks_remote {
                     url = normalize(
-                        base_dir(tree, &format!("/workspace/repos/{i}/url"), &project).join(&url),
+                        base_dir(tree, &format!("/workspace/repos/{i}/url"), &spec_dir).join(&url),
                     )
                     .display()
                     .to_string();
@@ -569,7 +573,7 @@ pub fn plan(
             }
             for (i, f) in ws.files.iter().enumerate() {
                 let src = normalize(
-                    base_dir(tree, &format!("/workspace/files/{i}/src"), &project)
+                    base_dir(tree, &format!("/workspace/files/{i}/src"), &spec_dir)
                         .join(rs(&f.src)?),
                 );
                 let raw = std::fs::read_to_string(&src).map_err(|e| {
@@ -626,7 +630,7 @@ pub fn plan(
             match entry {
                 ServiceEntry::Import(path) if name == "from" => {
                     compose_files.push(normalize(
-                        base_dir(tree, "/services/from", &project).join(rs(path)?),
+                        base_dir(tree, "/services/from", &spec_dir).join(rs(path)?),
                     ));
                 }
                 ServiceEntry::Import(path) => {
@@ -795,22 +799,23 @@ pub struct BakeInputs {
 /// Lists the project files bake must copy before each layer (absolute paths).
 pub fn bake_inputs(spec: &Spec, tree: &Node, entry: &Path) -> Result<BakeInputs, PlanError> {
     let project = project_root(entry);
+    let spec_dir = entry.parent().unwrap_or(&project).to_path_buf();
     let mut out = BakeInputs::default();
     for (i, p) in spec.packages.iter().enumerate() {
         if let Package::Import(f) = p {
             out.early.push(normalize(
-                base_dir(tree, &format!("/packages/{i}/from"), &project).join(&f.from),
+                base_dir(tree, &format!("/packages/{i}/from"), &spec_dir).join(&f.from),
             ));
         }
     }
     if let Some(v) = spec.tools.get("from") {
         out.early.push(normalize(
-            base_dir(tree, "/tools/from", &project).join(tool_version(v)),
+            base_dir(tree, "/tools/from", &spec_dir).join(tool_version(v)),
         ));
     }
     for (i, d) in spec.deps.iter().enumerate() {
         let manifest =
-            normalize(base_dir(tree, &format!("/deps/{i}/from"), &project).join(&d.from));
+            normalize(base_dir(tree, &format!("/deps/{i}/from"), &spec_dir).join(&d.from));
         let rel = manifest
             .strip_prefix(&project)
             .unwrap_or(&manifest)

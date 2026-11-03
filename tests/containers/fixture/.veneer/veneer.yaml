@@ -3,7 +3,7 @@ version: 1
 base: ubuntu:24.04
 vars:
   greeting: "hello from {{ os.distro }}"
-packages: [git, curl, python3]
+packages: [ca-certificates, git, curl, python3]
 tools:
   from: ../.tool-versions
   "aqua:mikefarah/yq": "4.44.3"

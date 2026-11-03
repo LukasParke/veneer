@@ -147,7 +147,7 @@ suite_compose() {
   echo "▸ compose"
   local name="veneer-ct-compose"
   start "$name" docker:27-cli -v /var/run/docker.sock:/var/run/docker.sock
-  docker exec "$name" sh -c 'mkdir -p /cf/.veneer && cat > /cf/.veneer/veneer.yaml' <<'EOF'
+  docker exec -i "$name" sh -c 'mkdir -p /cf/.veneer && cat > /cf/.veneer/veneer.yaml' <<'EOF'
 version: 1
 services:
   cache:
@@ -177,7 +177,7 @@ suite_install() {
   docker exec -d "$name" python3 -m http.server 8765 -d /release
   sleep 1
   check "install: one command installs, verifies, and runs veneer" sh -c "docker exec $name sh -c 'apt-get -qq update >/dev/null && apt-get -qq install -y curl xz-utils >/dev/null && curl -fsSL http://127.0.0.1:8765/install.sh | VENEER_RELEASE_URL=http://127.0.0.1:8765 sh -s -- check /fixture' | grep -q '^ok '"
-  check "install: tampered archive is rejected" sh -c "docker exec $name sh -c 'mkdir -p /bad && cp /release/* /bad/ && echo junk >> /bad/veneer-$target.tar.xz && cd /bad && (python3 -m http.server 8766 >/dev/null 2>&1 &) && sleep 1 && ! curl -fsSL http://127.0.0.1:8766/install.sh | VENEER_RELEASE_URL=http://127.0.0.1:8766 VENEER_INSTALL_DIR=/tmp/v sh -s -- --version'"
+  check "install: tampered archive is rejected" sh -c "docker exec $name sh -c 'mkdir -p /bad && cp -r /release/. /bad/ && echo junk >> /bad/veneer-$target.tar.xz && cd /bad && (python3 -m http.server 8766 >/dev/null 2>&1 &) && sleep 1 && ! curl -fsSL http://127.0.0.1:8766/install.sh | VENEER_RELEASE_URL=http://127.0.0.1:8766 VENEER_INSTALL_DIR=/tmp/v sh -s -- --version'"
   docker rm -f "$name" >/dev/null
 }
 

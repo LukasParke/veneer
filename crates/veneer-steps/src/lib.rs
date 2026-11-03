@@ -161,6 +161,21 @@ fn apply_images(refs: &[String], cx: &mut Cx<'_>) -> Result<()> {
         return Ok(());
     }
     // No daemon (e.g. inside an image build): save docker-loadable tarballs with crane.
+    // crane (Go) verifies registries against the system CA bundle.
+    const CA_BUNDLES: &[&str] = &[
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/ssl/cert.pem",
+        "/etc/ssl/certs/ca-bundle.crt",
+    ];
+    if cfg!(target_os = "linux")
+        && std::env::var_os("SSL_CERT_FILE").is_none()
+        && !CA_BUNDLES.iter().any(|p| Path::new(p).is_file())
+    {
+        return Err(ExecError::failed(
+            "pulling images without a Docker daemon needs a CA bundle: add `ca-certificates` to `packages`",
+        ));
+    }
     let bin = mise::ensure_mise(cx.dirs, cx.log)?;
     let platform = format!(
         "linux/{}",

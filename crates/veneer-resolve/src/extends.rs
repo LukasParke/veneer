@@ -192,6 +192,8 @@ pub fn load_layered(
         }
     }
     chain.pop();
+    let span = doc.span.clone();
     merge(&mut acc, doc, &[]);
+    acc.span = span;
     Some(acc)
 }
