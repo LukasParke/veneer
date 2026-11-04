@@ -29,13 +29,13 @@ Fly).
 
 - Sandbox creation: `veneer up/ls/enter/rm --provider docker|podman` (parallel `--count`).
 - Nix tool backend: `tools: { "nix:<attr>": latest | <nixpkgs rev> }`.
-- `qcow2` and Firecracker bundle bake targets (`--target qcow2|firecracker`).
+- Bake targets `qcow2`, `firecracker` (bundle), `disk` (bootable, via d2vm) and `ami`
+  (S3 + EC2 VM Import + register-image, or `--snapshot-id`).
+- Firecracker memory snapshots: `veneer vm snapshot|restore|boot`.
 - Language server: `veneer lsp` (diagnostics incl. unsaved buffers, hover, completion).
 
 ### Non-goals
 
-- Firecracker memory snapshots (need a running microVM with KVM).
-- AMI publishing (cloud-account specific; `qcow2` is the portable VM disk).
 - Long-lived workstation convergence / dotfiles sync.
 
 ## 2. Principles

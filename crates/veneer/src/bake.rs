@@ -14,6 +14,8 @@ pub enum TargetArg {
     Rootfs,
     Qcow2,
     Firecracker,
+    Disk,
+    Ami,
 }
 
 #[derive(Debug, clap::Args)]
@@ -43,6 +45,18 @@ pub struct BakeArgs {
     /// Guest kernel (uncompressed vmlinux) for --target firecracker.
     #[arg(long)]
     pub kernel: Option<PathBuf>,
+    /// --target ami: S3 bucket for the disk upload.
+    #[arg(long)]
+    pub s3_bucket: Option<String>,
+    /// --target ami: AMI name (default: veneer-<project>-<unix time>).
+    #[arg(long)]
+    pub ami_name: Option<String>,
+    /// --target ami: AWS region.
+    #[arg(long)]
+    pub region: Option<String>,
+    /// --target ami: register this existing EBS snapshot instead of uploading.
+    #[arg(long)]
+    pub snapshot_id: Option<String>,
 }
 
 pub fn run(args: BakeArgs) -> ExitCode {
@@ -116,6 +130,8 @@ pub fn run(args: BakeArgs) -> ExitCode {
             TargetArg::Rootfs => Target::Rootfs,
             TargetArg::Qcow2 => Target::Qcow2,
             TargetArg::Firecracker => Target::Firecracker,
+            TargetArg::Disk => Target::Disk,
+            TargetArg::Ami => Target::Ami,
         },
         tag,
         push: args.push,
@@ -124,6 +140,18 @@ pub fn run(args: BakeArgs) -> ExitCode {
         output: args.output.clone(),
         context_dir: args.context.clone(),
         kernel: args.kernel.clone(),
+        ami: matches!(args.kind, TargetArg::Ami).then(|| veneer_bake::AmiOptions {
+            bucket: args.s3_bucket.clone(),
+            name: args.ami_name.clone().unwrap_or_else(|| {
+                let secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                format!("veneer-{name}-{secs}")
+            }),
+            region: args.region.clone(),
+            snapshot_id: args.snapshot_id.clone(),
+        }),
         spec_in_image: format!(
             "{}/{}",
             veneer_bake::PROJECT_DIR,
@@ -155,7 +183,11 @@ pub fn run(args: BakeArgs) -> ExitCode {
                 baked.id.map(|i| format!(" ({i})")).unwrap_or_default()
             );
             if let Some(r) = baked.rootfs {
-                eprintln!("✓ rootfs {}", r.display());
+                eprintln!("✓ {}", r.display());
+            }
+            if let Some(ami) = baked.ami {
+                eprintln!("✓ AMI {ami}");
+                println!("{ami}");
             }
             ExitCode::SUCCESS
         }

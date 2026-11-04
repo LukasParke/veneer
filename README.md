@@ -47,10 +47,11 @@ veneer diff                         # what would run, and why
 veneer exec -- <cmd>                # run with the workspace env and tools on PATH
 veneer env --format sh|json|dotenv  # print the env (secrets masked)
 veneer down [--rm]                  # stop services (and delete the workspace)
-veneer bake --target oci|rootfs|qcow2|firecracker   # image, ext4, VM disk, microVM bundle
+veneer bake --target oci|rootfs|qcow2|disk|ami|firecracker   # image, ext4, VM disks, AMI, microVM
                                     #   (--overlay/--set carry into the image)
 veneer up --count N [--image I]     # create N sandboxes (docker|podman), stage each
 veneer ls | enter <id> | rm --all   # manage sandboxes
+veneer vm snapshot|restore <bundle> # Firecracker: snapshot a staged microVM, resume copies in ms
 veneer lsp                          # language server: diagnostics, hover, completion
 veneer entrypoint -- <cmd>          # container entrypoint: workspace phase, then exec
 veneer lock [--update]              # pin remote sources in .veneer/veneer.lock
@@ -68,7 +69,7 @@ a clean run. The container suite checks this on every distro.
 ```sh
 cargo test --workspace                 # unit + integration tests
 tests/containers/build-linux.sh        # static musl binary for containers
-tests/containers/run.sh                # distros, bake, compose, installer, devcontainer, oci, nix, sandbox
+tests/containers/run.sh                # 13 suites incl. Firecracker + KVM boot (see header for KVM_EXEC)
 ```
 
 Design: [spec](docs/superpowers/specs/2026-11-03-veneer-design.md) ·

@@ -8,6 +8,7 @@ mod lsp;
 mod render;
 mod run;
 mod sandbox;
+mod vm;
 
 use std::process::ExitCode;
 
@@ -58,6 +59,9 @@ enum Command {
     Rm(sandbox::RmArgs),
     /// Language server (stdio): diagnostics, hover, completion for veneer specs.
     Lsp,
+    /// Boot Firecracker bundles and take/restore memory snapshots.
+    #[command(subcommand)]
+    Vm(vm::VmCmd),
     /// Internal helpers used by generated steps.
     #[command(hide = true, subcommand)]
     Internal(feature::Internal),
@@ -81,6 +85,7 @@ fn main() -> ExitCode {
         Command::Internal(cmd) => feature::run(cmd),
         Command::Up(args) => sandbox::up(args),
         Command::Lsp => lsp::run(),
+        Command::Vm(cmd) => vm::run(cmd),
         Command::Ls(args) => sandbox::ls(args),
         Command::Enter(args) => sandbox::enter(args),
         Command::Rm(args) => sandbox::rm(args),
