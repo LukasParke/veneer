@@ -9,6 +9,7 @@ use veneer_exec::{Check, Cx, ExecError, Result, Steps, run_logged, write_atomic}
 use veneer_plan::{Dirs, Plan, Step, StepKind, adapters};
 
 pub mod mise;
+mod nix;
 mod repos;
 mod services;
 mod util;
@@ -28,6 +29,11 @@ pub fn command_env(plan: &Plan, dirs: &Dirs, workspace: bool) -> BTreeMap<String
         env.insert("PATH".into(), format!("{}:{path}", dir.display()));
     }
     env.extend(mise::tool_env(dirs));
+    let nix_bin = nix::profile(dirs).join("bin");
+    if nix_bin.is_dir() {
+        let path = env.get("PATH").cloned().unwrap_or_default();
+        env.insert("PATH".into(), format!("{}:{path}", nix_bin.display()));
+    }
     // containerEnv recorded by installed Dev Container Features (`${PATH}` expands).
     let features: BTreeMap<String, String> = std::fs::read(dirs.state.join("features/env.json"))
         .ok()
@@ -344,6 +350,7 @@ impl Steps for StepImpls {
                 }
             }
             StepKind::Tools { tools } => mise::check(cx.dirs, tools),
+            StepKind::Nix { refs } => nix::check(cx.dirs, refs),
             StepKind::Deps { dir, manager, .. } => match adapters::install_marker(*manager) {
                 Some(m) if !dir.join(m).exists() => Check::Needed(format!("{m} missing")),
                 _ => Check::Unknown,
@@ -393,6 +400,7 @@ impl Steps for StepImpls {
         match &step.kind {
             StepKind::Packages { names } => apply_packages(names, cx),
             StepKind::Tools { tools } => mise::apply(cx.dirs, tools, cx.log),
+            StepKind::Nix { refs } => nix::apply(cx.dirs, refs, cx.log),
             StepKind::Deps {
                 dir,
                 manager,
@@ -476,6 +484,7 @@ impl Steps for StepImpls {
                 names.join(",")
             }
             StepKind::Tools { tools } => mise::verify(cx.dirs, tools)?,
+            StepKind::Nix { refs } => nix::verify(cx.dirs, refs)?,
             StepKind::Deps {
                 dir,
                 manager,

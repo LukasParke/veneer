@@ -12,6 +12,8 @@ use crate::run::{Target as SpecTarget, fail, load, make_plan};
 pub enum TargetArg {
     Oci,
     Rootfs,
+    Qcow2,
+    Firecracker,
 }
 
 #[derive(Debug, clap::Args)]
@@ -32,12 +34,15 @@ pub struct BakeArgs {
     /// Linux veneer binary to put in the image (default: this binary, on Linux).
     #[arg(long, env = "VENEER_LINUX_BIN")]
     pub veneer_bin: Option<PathBuf>,
-    /// Output file for --target rootfs.
+    /// Output file for --target rootfs|qcow2, or directory for firecracker.
     #[arg(long, short)]
     pub output: Option<PathBuf>,
     /// Keep the generated build context in this directory.
     #[arg(long)]
     pub context: Option<PathBuf>,
+    /// Guest kernel (uncompressed vmlinux) for --target firecracker.
+    #[arg(long)]
+    pub kernel: Option<PathBuf>,
 }
 
 pub fn run(args: BakeArgs) -> ExitCode {
@@ -109,6 +114,8 @@ pub fn run(args: BakeArgs) -> ExitCode {
         target: match args.kind {
             TargetArg::Oci => Target::Oci,
             TargetArg::Rootfs => Target::Rootfs,
+            TargetArg::Qcow2 => Target::Qcow2,
+            TargetArg::Firecracker => Target::Firecracker,
         },
         tag,
         push: args.push,
@@ -116,6 +123,15 @@ pub fn run(args: BakeArgs) -> ExitCode {
         veneer_bin,
         output: args.output.clone(),
         context_dir: args.context.clone(),
+        kernel: args.kernel.clone(),
+        spec_in_image: format!(
+            "{}/{}",
+            veneer_bake::PROJECT_DIR,
+            l.entry
+                .strip_prefix(&plan.project_root)
+                .unwrap_or(&l.entry)
+                .display()
+        ),
     };
     let log_path = l
         .dirs

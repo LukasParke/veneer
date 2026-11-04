@@ -413,19 +413,47 @@ pub fn plan(
 
         // tools
         let mut tools = IndexMap::new();
-        for (name, v) in spec.tools.iter().filter(|_| want("tools", "tools")) {
+        let tools_wanted = want("tools", "tools") || want("nix", "nix");
+        for (name, v) in spec.tools.iter().filter(|_| tools_wanted) {
             if name == "from" {
                 let path =
                     normalize(base_dir(tree, "/tools/from", &spec_dir).join(rs(&tool_version(v))?));
                 tools.extend(adapters::tools_from(&path).map_err(PlanError::spec)?);
             }
         }
-        for (name, v) in spec.tools.iter().filter(|_| want("tools", "tools")) {
+        for (name, v) in spec.tools.iter().filter(|_| tools_wanted) {
             if name != "from" {
                 tools.insert(name.clone(), rs(&tool_version(v))?);
             }
         }
-        if !tools.is_empty() {
+        // `nix:<attr>` tools install through Nix instead of mise. The value is `latest`
+        // (the registry's nixpkgs) or a nixpkgs revision/branch (e.g. `nixos-24.05`).
+        let mut nix_refs = Vec::new();
+        tools.retain(|name, version| match name.strip_prefix("nix:") {
+            Some(attr) if attr.contains('#') => {
+                nix_refs.push(attr.to_string());
+                false
+            }
+            Some(attr) => {
+                nix_refs.push(if version == "latest" {
+                    format!("nixpkgs#{attr}")
+                } else {
+                    format!("github:NixOS/nixpkgs/{version}#{attr}")
+                });
+                false
+            }
+            None => true,
+        });
+        if !nix_refs.is_empty() && want("nix", "nix") {
+            steps.push(step(
+                "nix",
+                "nix",
+                Phase::Build,
+                StepKind::Nix { refs: nix_refs },
+                &[],
+            ));
+        }
+        if !tools.is_empty() && want("tools", "tools") {
             steps.push(step(
                 "tools",
                 "tools",

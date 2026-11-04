@@ -13,13 +13,15 @@
 #   install  the one-command installer against a local release server
 #   devcontainer  extends a devcontainer.json: env, lifecycle hooks, a local and a ghcr.io Feature
 #   oci      oci:// spec sources and extends through a local registry (pushed with oras)
+#   nix      `nix:` tools through Nix (nixos/nix), plus the musl loader guard (V4002)
+#   sandbox  `veneer up/ls/enter/rm`: parallel sandboxes from the baked image (run after bake)
 set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/../.." && pwd)"
 bin="$repo/target/linux/release/veneer"
 host_bin="${HOST_VENEER:-$repo/target/debug/veneer}"
-SUITES="${SUITES:-distros bake compose install devcontainer oci}"
+SUITES="${SUITES:-distros bake compose install devcontainer oci nix sandbox}"
 DISTROS="${DISTROS:-ubuntu:24.04 debian:12 alpine:3.20 fedora:41}"
 TOKEN="tok-s3cret-value"
 
@@ -142,6 +144,9 @@ suite_bake() {
   check "bake: rebuild after an unrelated edit reuses cached layers" sh -c "'$host_bin' bake '$proj' --veneer-bin '$bin' --tag '$tag' && grep -c CACHED \$(ls -t '$work/host-state/logs'/bake-*.log | head -n1) | awk '{exit !(\$1 >= 5)}'"
   check "bake: --overlay reaches every in-image step (node in image)" sh -c "'$host_bin' bake '$proj' --veneer-bin '$bin' --tag veneer-ct/fixture:node --overlay '$proj/.veneer/overlays/node.overlay.yaml' && docker run --rm -e TEST_API_TOKEN=$TOKEN -v $work/upstream.git:/srv/upstream.git:ro veneer-ct/fixture:node sh -c 'node --version && test -f /opt/veneer/project/node_modules/is-number/package.json' | grep -q v22.11.0"
   check "bake: rootfs ext4 image" sh -c "'$host_bin' bake '$proj' --veneer-bin '$bin' --tag '$tag' --target rootfs -o '$work/rootfs.ext4' && file '$work/rootfs.ext4' | grep -qi ext4"
+  printf 'fake-vmlinux' >"$work/vmlinux"
+  check "bake: firecracker bundle (rootfs + init shim + kernel + vm-config)" sh -c "'$host_bin' bake '$proj' --veneer-bin '$bin' --tag '$tag' --target firecracker --kernel '$work/vmlinux' -o '$work/fc' && python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); assert c[\"drives\"][0][\"path_on_host\"]==\"rootfs.ext4\" and \"init=/sbin/veneer-init\" in c[\"boot-source\"][\"boot_args\"]' '$work/fc/vm-config.json' && cmp -s '$work/vmlinux' '$work/fc/vmlinux' && docker run --rm -v '$work/fc:/fc' alpine:3.20 sh -c 'apk add --no-cache e2fsprogs-extra >/dev/null && debugfs -R \"cat /sbin/veneer-init\" /fc/rootfs.ext4 2>/dev/null > /tmp/init && sh -n /tmp/init && grep -q \"veneer entrypoint /opt/veneer/project/.veneer/veneer.yaml\" /tmp/init && debugfs -R \"stat /usr/local/bin/veneer\" /fc/rootfs.ext4 2>/dev/null | grep -q Inode'"
+  check "bake: qcow2 VM disk" sh -c "'$host_bin' bake '$proj' --veneer-bin '$bin' --tag '$tag' --target qcow2 -o '$work/disk.qcow2' && file '$work/disk.qcow2' | grep -qi qcow"
   unset VENEER_STATE_DIR
 }
 
@@ -221,6 +226,48 @@ suite_oci() {
   check "oci: upstream retag keeps resolving the pinned digest" sh -c "docker run --rm --network $net -v $work/ocispec/.veneer:/w -w /w ghcr.io/oras-project/oras:v1.2.0 push --plain-http $reg:5000/envs/base:v1 base.yaml >/dev/null && docker exec $name sh -c 'cd /p && veneer env --format dotenv | grep -q LAYER=base'"
   docker rm -f "$name" "$reg" >/dev/null
   docker network rm "$net" >/dev/null 2>&1
+}
+
+# ------------------------------------------------------------------ nix
+suite_nix() {
+  echo "▸ nix"
+  local name="veneer-ct-nix"
+  docker rm -f "$name" >/dev/null 2>&1
+  docker run -d --name "$name" nixos/nix:2.24.10 sleep infinity >/dev/null
+  docker exec "$name" mkdir -p /usr/local/bin /p/.veneer
+  docker cp "$bin" "$name:/usr/local/bin/veneer" >/dev/null
+  docker exec "$name" sh -c 'printf "version: 1\ntools:\n  \"nix:hello\": latest\n" > /p/.veneer/veneer.yaml'
+  check "nix: nix:hello installs into veneer's profile" sh -c "docker exec $name /usr/local/bin/veneer apply /p --json | grep -q '\"ok\":true'"
+  check "nix: tool on PATH through veneer exec" sh -c "docker exec $name /usr/local/bin/veneer exec /p -- hello | grep -q 'Hello, world!'"
+  check "nix: second apply is a no-op" sh -c "docker exec $name /usr/local/bin/veneer apply /p --json | grep -q '\"applied\":0'"
+  docker rm -f "$name" >/dev/null
+
+  local g="veneer-ct-guard"
+  start "$g" alpine:3.20
+  docker exec "$g" sh -c 'mkdir -p /g/.veneer && printf "version: 1\ntools:\n  \"aqua:BurntSushi/ripgrep\": \"14.1.1\"\n" > /g/.veneer/veneer.yaml'
+  if [ "$(docker exec "$g" uname -m)" = aarch64 ]; then
+    check "nix: glibc-only tool on musl fails early with V4002" sh -c "! docker exec $g veneer apply /g > $logs/guard.txt 2>&1 && grep -q V4002 $logs/guard.txt"
+  fi
+  docker rm -f "$g" >/dev/null
+}
+
+# ------------------------------------------------------------------ sandbox
+suite_sandbox() {
+  echo "▸ sandbox"
+  local image="veneer-ct/fixture:latest"
+  if ! docker image inspect "$image" >/dev/null 2>&1; then
+    export VENEER_STATE_DIR="$work/host-state"
+    cp -R "$here/fixture" "$work/sbproj" 2>/dev/null
+    "$host_bin" bake "$work/sbproj" --veneer-bin "$bin" --tag "$image" >/dev/null 2>&1
+    unset VENEER_STATE_DIR
+  fi
+  local t0=$(date +%s)
+  check "sandbox: up --count 3 from the baked image" sh -c "'$host_bin' up '$here/fixture' --image $image --count 3 --name ct-sb --json --env TEST_API_TOKEN=$TOKEN -v $work/upstream.git:/srv/upstream.git:ro | tee $logs/sb.ndjson | grep -c '\"ok\":true' | grep -qx 3"
+  local secs=$(( $(date +%s) - t0 ))
+  check "sandbox: 3 warm sandboxes ready in ${secs}s (< 60s)" test "$secs" -lt 60
+  check "sandbox: ls lists them" sh -c "'$host_bin' ls | grep -c '^ct-sb-' | grep -qx 3"
+  check "sandbox: enter runs with that sandbox's workspace env" sh -c "'$host_bin' enter ct-sb-2 -- sh -c 'echo \$VENEER_WORKSPACE_ID; jq --version' | tr '\n' ' ' | grep -q 'ct-sb-2 jq-1.7.1'"
+  check "sandbox: rm --all removes them" sh -c "'$host_bin' rm --all && [ -z \"\$('$host_bin' ls)\" ]"
 }
 
 for s in $SUITES; do "suite_$s"; done

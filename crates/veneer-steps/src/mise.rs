@@ -171,10 +171,84 @@ pub fn apply(dirs: &Dirs, tools: &IndexMap<String, String>, log: &mut Log) -> Re
     run_logged(mise_cmd(&bin, dirs).arg("install"), log)
 }
 
+/// The ELF program interpreter (`PT_INTERP`) of a file, if it is a dynamically linked ELF.
+pub fn elf_interpreter(path: &std::path::Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.len() < 64 || &bytes[..4] != b"\x7fELF" || bytes[4] != 2 || bytes[5] != 1 {
+        return None; // only 64-bit little-endian ELF
+    }
+    let u16_at =
+        |o: usize| Some(u16::from_le_bytes(bytes.get(o..o + 2)?.try_into().ok()?) as usize);
+    let u32_at = |o: usize| Some(u32::from_le_bytes(bytes.get(o..o + 4)?.try_into().ok()?));
+    let u64_at =
+        |o: usize| Some(u64::from_le_bytes(bytes.get(o..o + 8)?.try_into().ok()?) as usize);
+    let (phoff, phentsize, phnum) = (u64_at(32)?, u16_at(54)?, u16_at(56)?);
+    for i in 0..phnum {
+        let ph = phoff + i * phentsize;
+        if u32_at(ph)? == 3 {
+            let (off, size) = (u64_at(ph + 8)?, u64_at(ph + 32)?);
+            let raw = bytes.get(off..off + size)?;
+            return Some(
+                String::from_utf8_lossy(raw)
+                    .trim_end_matches('\0')
+                    .to_string(),
+            );
+        }
+    }
+    None
+}
+
+/// Installed tool executables that need a dynamic loader this system doesn't have
+/// (e.g. a glibc-only release on a musl distro): (tool, binary, loader).
+fn unrunnable(bin: &PathBuf, dirs: &Dirs) -> Vec<(String, PathBuf, String)> {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(out) = capture(mise_cmd(bin, dirs).args(["ls", "--json"])) else {
+        return Vec::new();
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&out) else {
+        return Vec::new();
+    };
+    let mut bad = Vec::new();
+    for (tool, entries) in v.as_object().into_iter().flatten() {
+        for e in entries.as_array().into_iter().flatten() {
+            let Some(root) = e["install_path"].as_str() else {
+                continue;
+            };
+            let mut stack = vec![(PathBuf::from(root), 0)];
+            while let Some((dir, depth)) = stack.pop() {
+                for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                    let p = entry.path();
+                    let Ok(ft) = entry.file_type() else { continue };
+                    if ft.is_dir() && depth < 3 {
+                        stack.push((p, depth + 1));
+                    } else if ft.is_file()
+                        && entry
+                            .metadata()
+                            .is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+                        && let Some(interp) = elf_interpreter(&p)
+                        && !std::path::Path::new(&interp).exists()
+                    {
+                        bad.push((tool.clone(), p, interp));
+                    }
+                }
+            }
+        }
+    }
+    bad
+}
+
 pub fn verify(dirs: &Dirs, tools: &IndexMap<String, String>) -> Result<String> {
     let bin = std::env::var_os("VENEER_MISE_BIN")
         .map(PathBuf::from)
         .unwrap_or_else(|| dirs.mise_bin());
+    if let Some((tool, exe, interp)) = unrunnable(&bin, dirs).into_iter().next() {
+        return Err(ExecError::failed(format!(
+            "V4002: `{tool}` installed {} which needs the loader {interp}, but this system doesn't \
+             have it (e.g. a glibc-only release on a musl distro). Pin a version or backend that \
+             publishes a build for this platform, or install it through `packages` or `nix:`",
+            exe.display()
+        )));
+    }
     match missing_tools(&bin, dirs, tools) {
         Some(m) if m.is_empty() => Ok(tools
             .iter()

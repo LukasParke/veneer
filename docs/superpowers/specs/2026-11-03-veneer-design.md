@@ -25,13 +25,18 @@ Target runtimes: plain VM / bare metal / macOS, Docker / Podman, Kubernetes,
 Firecracker and other microVMs, and hosted sandboxes (Modal, E2B, Daytona,
 Fly).
 
-### Non-goals (v1)
+### Originally deferred, now implemented
 
-- Creating or destroying sandboxes (`veneer up --provider …`) — later layer.
-- Nix tool backend — later opt-in backend.
-- Firecracker memory snapshots, qcow2/AMI images — later bake targets.
-- Language server — later; the spec layer is chosen so it is reachable (§8.1).
-- Long-lived workstation convergence / dotfiles sync — out of scope.
+- Sandbox creation: `veneer up/ls/enter/rm --provider docker|podman` (parallel `--count`).
+- Nix tool backend: `tools: { "nix:<attr>": latest | <nixpkgs rev> }`.
+- `qcow2` and Firecracker bundle bake targets (`--target qcow2|firecracker`).
+- Language server: `veneer lsp` (diagnostics incl. unsaved buffers, hover, completion).
+
+### Non-goals
+
+- Firecracker memory snapshots (need a running microVM with KVM).
+- AMI publishing (cloud-account specific; `qcow2` is the portable VM disk).
+- Long-lived workstation convergence / dotfiles sync.
 
 ## 2. Principles
 

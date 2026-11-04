@@ -4,8 +4,10 @@ mod bake;
 mod check;
 mod feature;
 mod init;
+mod lsp;
 mod render;
 mod run;
+mod sandbox;
 
 use std::process::ExitCode;
 
@@ -46,6 +48,16 @@ enum Command {
     Lock(run::LockArgs),
     /// Scaffold .veneer/veneer.yaml from existing project files.
     Init(init::InitArgs),
+    /// Create sandboxes (containers), stage the spec in each, and print their handles.
+    Up(sandbox::UpArgs),
+    /// List veneer sandboxes.
+    Ls(sandbox::LsArgs),
+    /// Run a command (default: a shell) inside a sandbox with its workspace environment.
+    Enter(sandbox::EnterArgs),
+    /// Remove sandboxes.
+    Rm(sandbox::RmArgs),
+    /// Language server (stdio): diagnostics, hover, completion for veneer specs.
+    Lsp,
     /// Internal helpers used by generated steps.
     #[command(hide = true, subcommand)]
     Internal(feature::Internal),
@@ -67,6 +79,11 @@ fn main() -> ExitCode {
         Command::Lock(args) => run::lock(args),
         Command::Init(args) => init::run(args),
         Command::Internal(cmd) => feature::run(cmd),
+        Command::Up(args) => sandbox::up(args),
+        Command::Lsp => lsp::run(),
+        Command::Ls(args) => sandbox::ls(args),
+        Command::Enter(args) => sandbox::enter(args),
+        Command::Rm(args) => sandbox::rm(args),
         Command::Schema => {
             print!("{}", veneer_spec::json_schema_string());
             ExitCode::SUCCESS

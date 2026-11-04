@@ -61,6 +61,10 @@ pub enum StepKind {
     Tools {
         tools: IndexMap<String, String>,
     },
+    /// Flake references installed into veneer's own Nix profile.
+    Nix {
+        refs: Vec<String>,
+    },
     Deps {
         dir: PathBuf,
         manifest: PathBuf,
