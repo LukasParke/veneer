@@ -29,6 +29,10 @@ jobs:
       - run: tests/containers/build-linux.sh
       - name: Enable KVM for the vm suite
         run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+          if [ -e /dev/kvm ] && command -v udevadm >/dev/null; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+            sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+          else
+            echo "no /dev/kvm on this runner; the vm suite will report it"
+          fi
       - run: tests/containers/run.sh
