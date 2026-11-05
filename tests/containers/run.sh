@@ -18,6 +18,8 @@
 #   resilience  veneer.lock pins + --frozen, hook retries/timeouts, doctor preflight, and an
 #            offline bundle applied in a container with no network (fingerprint parity)
 #   cloudinit  `bake --target cloud-init` output validated by `cloud-init schema`
+#   supply   OCI labels + fingerprint label, SBOMs (CycloneDX validated) and SLSA provenance as
+#            OCI referrers, and cosign sign/attest + verify against a local registry
 #   vm       Firecracker boot + memory snapshot + 2 restores, and the bootable disk under QEMU/KVM.
 #            Needs a KVM host sharing $VM_SHARED at the same path, e.g. on macOS (M3+):
 #              limactl start --name veneer-kvm (vz, nestedVirtualization: true, mount /tmp/veneer-fc rw)
@@ -29,7 +31,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/../.." && pwd)"
 bin="$repo/target/linux/release/veneer"
 host_bin="${HOST_VENEER:-$repo/target/debug/veneer}"
-SUITES="${SUITES:-distros bake compose install devcontainer oci nix sandbox resilience cloudinit vm}"
+SUITES="${SUITES:-distros bake compose install devcontainer oci nix sandbox resilience cloudinit supply vm}"
 DISTROS="${DISTROS:-ubuntu:24.04 debian:12 alpine:3.20 fedora:41}"
 TOKEN="tok-s3cret-value"
 
@@ -320,6 +322,31 @@ suite_cloudinit() {
   check "cloudinit: bake writes user-data and a NoCloud seed ISO" env VENEER_STATE_DIR="$work/host-state" "$host_bin" bake "$here/vm-fixture" --target cloud-init --embed-veneer --veneer-bin "$bin" -o "$ud/user-data" --seed "$ud/seed.iso"
   check "cloudinit: user-data passes \`cloud-init schema\`" docker run --rm -v "$ud:/t" ubuntu:24.04 sh -c 'apt-get update -qq >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq cloud-init >/dev/null 2>&1 && cloud-init schema --config-file /t/user-data'
   check "cloudinit: the seed ISO is labelled cidata and holds both files" docker run --rm -v "$ud:/t" alpine:3.20 sh -c 'apk add --no-cache xorriso >/dev/null 2>&1 && xorriso -indev /t/seed.iso -pvd_info 2>/dev/null | grep -qi "Volume Id.*cidata" && xorriso -indev /t/seed.iso -ls / 2>/dev/null | grep -qi user-data && xorriso -indev /t/seed.iso -ls / 2>/dev/null | grep -qi meta-data'
+}
+
+# ------------------------------------------------------------------ supply
+suite_supply() {
+  echo "▸ supply"
+  local reg="veneer-ct-supply-reg" att="$work/att" ref="localhost:5005/veneer-ct/supply"
+  local oras="ghcr.io/oras-project/oras:v1.2.0" cosign="gcr.io/projectsigstore/cosign:v2.5.3"
+  docker rm -f "$reg" >/dev/null 2>&1
+  docker run -d --name "$reg" -p 5005:5000 registry:2 >/dev/null
+  sleep 2
+  mkdir -p "$att" "$work/keys"
+  docker run --rm -e COSIGN_PASSWORD= -v "$work/keys:/k" -w /k "$cosign" generate-key-pair >/dev/null 2>&1
+  local hs="$work/host-state"
+  check "supply: bake --push with SBOMs and provenance" sh -c "env VENEER_STATE_DIR=$hs '$host_bin' bake '$here/vm-fixture' --veneer-bin '$bin' --tag $ref:v1 --push --sbom cyclonedx,spdx --provenance --insecure-registry --attest-dir $att > $work/digest1 2>$logs/supply-bake1.log && grep -q '^$ref@sha256:' $work/digest1"
+  local d1; d1=$(cat "$work/digest1" 2>/dev/null)
+  check "supply: OCI labels and the environment fingerprint label" sh -c "docker image inspect $ref:v1 --format '{{json .Config.Labels}}' | python3 -c 'import json,sys; l=json.load(sys.stdin); assert l[\"org.opencontainers.image.created\"].endswith(\"Z\"); assert l[\"org.opencontainers.image.version\"]==\"v1\"; assert l[\"dev.veneer.fingerprint\"].startswith(\"sha256:\"); assert l[\"dev.veneer.spec\"].startswith(\"sha256:\")'"
+  check "supply: SBOMs and provenance are OCI referrers of the image" sh -c "docker run --rm --network host $oras discover --plain-http --format json $d1 > $work/refs.json && python3 -c 'import json; r=json.load(open(\"$work/refs.json\")); t={m[\"artifactType\"] for m in r.get(\"manifests\", r.get(\"referrers\", []))}; assert {\"application/vnd.cyclonedx+json\",\"application/spdx+json\",\"application/vnd.in-toto+json\"} <= t, t'"
+  check "supply: the CycloneDX SBOM validates against the 1.6 schema" docker run --rm -v "$att:/a" cyclonedx/cyclonedx-cli validate --input-file /a/sbom.cdx.json --input-version v1_6 --fail-on-errors
+  check "supply: the SPDX SBOM and SLSA statement are well formed" python3 -c "import json; s=json.load(open('$att/sbom.spdx.json')); assert s['spdxVersion']=='SPDX-2.3' and len(s['packages'])>1; p=json.load(open('$att/provenance.intoto.json')); assert p['_type']=='https://in-toto.io/Statement/v1' and p['predicateType']=='https://slsa.dev/provenance/v1'; assert p['subject'][0]['digest']['sha256']=='${d1##*sha256:}'"
+  check "supply: bake --sign signs and attests with cosign" sh -c "env VENEER_STATE_DIR=$hs COSIGN_PASSWORD= '$host_bin' bake '$here/vm-fixture' --veneer-bin '$bin' --tag $ref:v2 --push --sbom cyclonedx --provenance --sign --sign-key $work/keys/cosign.key --no-tlog --insecure-registry --attest-dir $att/signed > $work/digest2 2>$logs/supply-bake2.log"
+  local d2; d2=$(cat "$work/digest2" 2>/dev/null)
+  check "supply: cosign verify accepts the signature" docker run --rm --network host -v "$work/keys:/k" "$cosign" verify --key /k/cosign.pub --insecure-ignore-tlog=true --allow-insecure-registry "$d2"
+  check "supply: cosign verify-attestation accepts the SLSA provenance and SBOM" sh -c "docker run --rm --network host -v $work/keys:/k $cosign verify-attestation --key /k/cosign.pub --insecure-ignore-tlog=true --allow-insecure-registry --type slsaprovenance1 $d2 >/dev/null && docker run --rm --network host -v $work/keys:/k $cosign verify-attestation --key /k/cosign.pub --insecure-ignore-tlog=true --allow-insecure-registry --type cyclonedx $d2 >/dev/null"
+  check "supply: an unsigned image is rejected" sh -c "! docker run --rm --network host -v $work/keys:/k $cosign verify --key /k/cosign.pub --insecure-ignore-tlog=true --allow-insecure-registry $ref:v1"
+  docker rm -f "$reg" >/dev/null
 }
 
 # ------------------------------------------------------------------ vm

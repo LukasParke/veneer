@@ -928,3 +928,69 @@ pub fn fetch(args: FetchArgs) -> ExitCode {
         }
     }
 }
+
+// ---------------------------------------------------------------- sbom
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum SbomFmt {
+    Cyclonedx,
+    Spdx,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SbomArgs {
+    #[command(flatten)]
+    pub target: Target,
+    #[arg(long, value_enum, default_value_t = SbomFmt::Cyclonedx)]
+    pub format: SbomFmt,
+    /// Describe the build phase only (the manifest a bake leaves in the image).
+    #[arg(long)]
+    pub build: bool,
+    /// Output file (default: stdout).
+    #[arg(long, short)]
+    pub output: Option<PathBuf>,
+}
+
+pub fn sbom(args: SbomArgs) -> ExitCode {
+    let l = match load(&args.target, false) {
+        Ok(l) => l,
+        Err(code) => return code,
+    };
+    let path = if args.build {
+        build_manifest_path(&l.dirs)
+    } else {
+        workspace_manifest_path(&l.dirs, &args.target.id)
+    };
+    let Some(m) = std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+    else {
+        return fail(
+            2,
+            &format!(
+                "no manifest at {} (run `veneer apply` first)",
+                path.display()
+            ),
+            false,
+        );
+    };
+    let name = veneer_plan::project_root(&l.entry)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "workspace".into());
+    let doc = match args.format {
+        SbomFmt::Cyclonedx => veneer_steps::sbom::cyclonedx(&m, &name, &args.target.id),
+        SbomFmt::Spdx => veneer_steps::sbom::spdx(&m, &name, &args.target.id),
+    };
+    let text = serde_json::to_string_pretty(&doc).unwrap() + "\n";
+    match &args.output {
+        Some(p) => {
+            if let Err(e) = std::fs::write(p, text) {
+                return fail(1, &format!("cannot write {}: {e}", p.display()), false);
+            }
+            eprintln!("✓ {}", p.display());
+        }
+        None => print!("{text}"),
+    }
+    ExitCode::SUCCESS
+}

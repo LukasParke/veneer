@@ -183,6 +183,8 @@ pub struct BakeJob<'a> {
     /// Overlay files (absolute, inside the project) passed to every in-image invocation.
     pub overlays: &'a [PathBuf],
     pub sets: &'a [(String, String)],
+    /// OCI image labels (`org.opencontainers.image.*`, `dev.veneer.*`).
+    pub labels: &'a [(String, String)],
 }
 
 /// Generates the Containerfile and stages the build context in `ctx`.
@@ -196,6 +198,7 @@ pub fn prepare(job: &BakeJob<'_>, ctx: &Path) -> Result<String> {
         veneer_bin,
         overlays,
         sets,
+        labels,
     } = *job;
     let project = &plan.project_root;
     let entry_rel = entry
@@ -291,6 +294,13 @@ pub fn prepare(job: &BakeJob<'_>, ctx: &Path) -> Result<String> {
         "RUN [\"veneer\", \"apply\", \"--phase\", \"build\"{extra}, {}]\n",
         q(&entry_rel)
     ));
+    if !labels.is_empty() {
+        cf.push_str("LABEL");
+        for (k, v) in labels {
+            cf.push_str(&format!(" \\\n  {}={}", k, q(v)));
+        }
+        cf.push('\n');
+    }
     cf.push_str(&format!(
         "ENTRYPOINT [\"veneer\", \"entrypoint\"{extra}, {}, \"--\"]\nCMD [\"sh\"]\n",
         q(&format!("{PROJECT_DIR}/{entry_rel}"))

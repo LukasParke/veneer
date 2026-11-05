@@ -62,6 +62,8 @@ pub struct BakeArgs {
     /// --target cloud-init: the image already has the build phase (from --target disk).
     #[arg(long)]
     pub prebaked: bool,
+    #[command(flatten)]
+    pub supply: crate::supply::SupplyArgs,
 }
 
 pub fn run(args: BakeArgs) -> ExitCode {
@@ -110,19 +112,6 @@ pub fn run(args: BakeArgs) -> ExitCode {
         .iter()
         .map(|o| cwd.join(o).canonicalize().unwrap_or_else(|_| cwd.join(o)))
         .collect();
-    let job = BakeJob {
-        base: &base,
-        plan: &plan,
-        entry: &l.entry,
-        documents: &l.documents,
-        inputs: &inputs,
-        veneer_bin: &veneer_bin,
-        overlays: &overlays,
-        sets: &args.target.sets,
-    };
-    if let Err(e) = prepare(&job, &ctx) {
-        return fail(e.exit, &e.message, false);
-    }
     let name = plan
         .project_root
         .file_name()
@@ -132,6 +121,21 @@ pub fn run(args: BakeArgs) -> ExitCode {
         .tag
         .clone()
         .unwrap_or_else(|| format!("veneer/{name}:latest"));
+    let labels = crate::supply::labels(&l, &plan.project_root, &tag);
+    let job = BakeJob {
+        base: &base,
+        plan: &plan,
+        entry: &l.entry,
+        documents: &l.documents,
+        inputs: &inputs,
+        veneer_bin: &veneer_bin,
+        overlays: &overlays,
+        sets: &args.target.sets,
+        labels: &labels,
+    };
+    if let Err(e) = prepare(&job, &ctx) {
+        return fail(e.exit, &e.message, false);
+    }
     let opts = BakeOptions {
         target: match args.kind {
             TargetArg::Oci => Target::Oci,
@@ -141,8 +145,9 @@ pub fn run(args: BakeArgs) -> ExitCode {
             TargetArg::Disk => Target::Disk,
             TargetArg::CloudInit => unreachable!("handled above"),
         },
-        tag,
-        push: args.push,
+        tag: tag.clone(),
+        // OCI images are pushed after labelling and fingerprinting (see supply::finish).
+        push: args.push && !(matches!(args.kind, TargetArg::Oci) && docker_available()),
         platform: args.platform.clone(),
         veneer_bin,
         output: args.output.clone(),
@@ -171,6 +176,7 @@ pub fn run(args: BakeArgs) -> ExitCode {
         opts.tag,
         log_path.display()
     );
+    let started = crate::supply::build_time().min(veneer_steps::sbom::now_secs());
     match build(&ctx, &opts, &mut log) {
         Ok(baked) => {
             eprintln!(
@@ -180,6 +186,40 @@ pub fn run(args: BakeArgs) -> ExitCode {
             );
             if let Some(r) = baked.rootfs {
                 eprintln!("✓ {}", r.display());
+            }
+            if matches!(args.kind, TargetArg::Oci) && docker_available() {
+                let overlays: Vec<String> = args
+                    .target
+                    .overlays
+                    .iter()
+                    .map(|o| o.display().to_string())
+                    .collect();
+                match crate::supply::finish(
+                    &args.supply,
+                    &l,
+                    &tag,
+                    &base,
+                    args.push,
+                    started,
+                    &overlays,
+                    &mut log,
+                ) {
+                    Ok(out) => {
+                        if let Some(d) = &out.digest {
+                            eprintln!("✓ pushed {d}");
+                            println!("{d}");
+                        }
+                        for f in &out.files {
+                            eprintln!("✓ {}", f.display());
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("{}", log.tail(40));
+                        return fail(e.exit, &format!("bake failed: {}", e.message), false);
+                    }
+                }
+            } else if args.supply.wanted() {
+                eprintln!("warning: --sbom/--provenance/--sign apply to --target oci with Docker");
             }
             ExitCode::SUCCESS
         }
@@ -316,4 +356,13 @@ fn cloud_init(args: &BakeArgs, l: &crate::run::Loaded) -> ExitCode {
         eprintln!("✓ {} (NoCloud seed, label cidata)", iso.display());
     }
     ExitCode::SUCCESS
+}
+
+fn docker_available() -> bool {
+    std::process::Command::new("docker")
+        .args(["info", "--format", "{{.ServerVersion}}"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }

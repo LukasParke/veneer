@@ -15,6 +15,7 @@ pub mod manifest;
 pub mod mise;
 mod nix;
 pub mod repos;
+pub mod sbom;
 mod services;
 mod util;
 

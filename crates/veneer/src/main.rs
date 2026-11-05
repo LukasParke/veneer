@@ -8,6 +8,7 @@ mod lsp;
 mod render;
 mod run;
 mod sandbox;
+mod supply;
 mod vm;
 
 use std::process::ExitCode;
@@ -49,6 +50,8 @@ enum Command {
     Bake(bake::BakeArgs),
     /// Pin remote sources, tool versions, image digests, and repo commits in veneer.lock.
     Lock(run::LockArgs),
+    /// Write a CycloneDX or SPDX SBOM for a workspace from its manifest.
+    Sbom(run::SbomArgs),
     /// Check that this host has what the spec needs.
     Doctor(run::DoctorArgs),
     /// Download everything the spec needs into an offline bundle (OCI layout).
@@ -89,6 +92,7 @@ fn main() -> ExitCode {
         Command::Bake(args) => bake::run(args),
         Command::Lock(args) => run::lock(args),
         Command::Doctor(args) => run::doctor(args),
+        Command::Sbom(args) => run::sbom(args),
         Command::Fetch(args) => run::fetch(args),
         Command::Init(args) => init::run(args),
         Command::Internal(cmd) => feature::run(cmd),
