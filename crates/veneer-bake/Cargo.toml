@@ -12,6 +12,11 @@ veneer-plan.workspace = true
 veneer-exec.workspace = true
 veneer-spec.workspace = true
 tempfile.workspace = true
+flate2.workspace = true
+tar.workspace = true
+ureq.workspace = true
+blake3.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 veneer-resolve.workspace = true

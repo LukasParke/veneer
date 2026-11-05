@@ -1694,7 +1694,12 @@ dependencies = [
 name = "veneer-bake"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "flate2",
+ "serde_json",
+ "tar",
  "tempfile",
+ "ureq",
  "veneer-exec",
  "veneer-plan",
  "veneer-resolve",

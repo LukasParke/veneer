@@ -11,6 +11,8 @@ use std::process::Command;
 use veneer_exec::{ExecError, Log, Result, run_logged};
 use veneer_plan::{BakeInputs, Plan};
 
+pub mod cloud_init;
+
 /// In-image locations.
 pub const PROJECT_DIR: &str = "/opt/veneer/project";
 pub const STATE_DIR: &str = "/var/lib/veneer";

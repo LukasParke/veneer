@@ -15,6 +15,8 @@ pub enum TargetArg {
     Qcow2,
     Firecracker,
     Disk,
+    /// `#cloud-config` user-data that stages the workspace on a stock cloud image.
+    CloudInit,
 }
 
 #[derive(Debug, clap::Args)]
@@ -44,6 +46,22 @@ pub struct BakeArgs {
     /// Guest kernel (uncompressed vmlinux) for --target firecracker.
     #[arg(long)]
     pub kernel: Option<PathBuf>,
+    /// --target cloud-init: also write a NoCloud seed ISO (label `cidata`).
+    #[arg(long, value_name = "ISO")]
+    pub seed: Option<PathBuf>,
+    /// --target cloud-init: fetch the project from this remote source at boot instead of
+    /// embedding it (github:, git+…, https:, oci://).
+    #[arg(long, value_name = "SOURCE")]
+    pub project: Option<String>,
+    /// --target cloud-init: embed the Linux veneer binary instead of downloading a release.
+    #[arg(long)]
+    pub embed_veneer: bool,
+    /// --target cloud-init: release base URL holding veneer-<arch>-unknown-linux-musl.tar.xz{,.sha256}.
+    #[arg(long, value_name = "URL")]
+    pub veneer_url: Option<String>,
+    /// --target cloud-init: the image already has the build phase (from --target disk).
+    #[arg(long)]
+    pub prebaked: bool,
 }
 
 pub fn run(args: BakeArgs) -> ExitCode {
@@ -51,6 +69,9 @@ pub fn run(args: BakeArgs) -> ExitCode {
         Ok(l) => l,
         Err(code) => return code,
     };
+    if matches!(args.kind, TargetArg::CloudInit) {
+        return cloud_init(&args, &l);
+    }
     let Some(base) = l.spec.base.clone() else {
         return fail(
             2,
@@ -118,6 +139,7 @@ pub fn run(args: BakeArgs) -> ExitCode {
             TargetArg::Qcow2 => Target::Qcow2,
             TargetArg::Firecracker => Target::Firecracker,
             TargetArg::Disk => Target::Disk,
+            TargetArg::CloudInit => unreachable!("handled above"),
         },
         tag,
         push: args.push,
@@ -166,4 +188,132 @@ pub fn run(args: BakeArgs) -> ExitCode {
             fail(e.exit, &format!("bake failed: {}", e.message), false)
         }
     }
+}
+
+fn cloud_init(args: &BakeArgs, l: &crate::run::Loaded) -> ExitCode {
+    use veneer_bake::cloud_init::{CloudInit, Install, Project, USER_DATA_LIMIT, release_sums};
+    for (name, secret) in &l.spec.secrets {
+        if secret.from == veneer_spec::SecretSource::Env {
+            eprintln!(
+                "warning: W3101: secret `{name}` reads an environment variable, which a cloud-init boot does not have; use `from: file` or `from: command` (instance metadata, a secret manager)"
+            );
+        }
+    }
+    let project_root = veneer_plan::project_root(&l.entry);
+    let cwd = std::env::current_dir().expect("cwd");
+    let mut extra_args = Vec::new();
+    for o in &args.target.overlays {
+        let abs = cwd.join(o).canonicalize().unwrap_or_else(|_| cwd.join(o));
+        match (abs.strip_prefix(&project_root), &args.project) {
+            (Ok(rel), None) => {
+                extra_args.push("--overlay".into());
+                extra_args.push(format!("{}/{}", veneer_bake::PROJECT_DIR, rel.display()));
+            }
+            _ => {
+                return fail(
+                    2,
+                    &format!(
+                        "overlay {} must be inside the embedded project",
+                        abs.display()
+                    ),
+                    false,
+                );
+            }
+        }
+    }
+    for (k, v) in &args.target.sets {
+        extra_args.push("--set".into());
+        extra_args.push(format!("{k}={v}"));
+    }
+    let project = match &args.project {
+        Some(src) => Project::Remote(src.clone()),
+        None => Project::Embed {
+            root: project_root.clone(),
+            entry: l
+                .entry
+                .strip_prefix(&project_root)
+                .unwrap_or(&l.entry)
+                .display()
+                .to_string(),
+        },
+    };
+    let install = if args.embed_veneer {
+        let bin = match args.veneer_bin.clone() {
+            Some(p) => p,
+            None if cfg!(target_os = "linux") => std::env::current_exe().expect("current exe"),
+            None => {
+                return fail(
+                    2,
+                    "--embed-veneer on a non-Linux host needs --veneer-bin <linux veneer binary>",
+                    false,
+                );
+            }
+        };
+        Install::Embed(bin)
+    } else {
+        let base = args.veneer_url.clone().unwrap_or_else(|| {
+            format!(
+                "https://github.com/LukasParke/veneer/releases/download/v{}",
+                env!("CARGO_PKG_VERSION")
+            )
+        });
+        match release_sums(&base) {
+            Ok(sums) => Install::Release {
+                base_url: base,
+                sums,
+            },
+            Err(e) => {
+                return fail(
+                    3,
+                    &format!(
+                        "cannot pin the veneer release: {}; pass --embed-veneer or --veneer-url",
+                        e.message
+                    ),
+                    false,
+                );
+            }
+        }
+    };
+    let ci = CloudInit {
+        install,
+        project,
+        workspace_id: args.target.id.clone(),
+        prebaked: args.prebaked,
+        extra_args,
+    };
+    let ud = match veneer_bake::cloud_init::user_data(&ci) {
+        Ok(u) => u,
+        Err(e) => return fail(e.exit, &e.message, false),
+    };
+    if ud.len() > USER_DATA_LIMIT {
+        eprintln!(
+            "warning: W3102: user-data is {} KiB; EC2 caps user-data at 16 KiB (use --project <remote source>, and a release instead of --embed-veneer)",
+            ud.len().div_ceil(1024)
+        );
+    }
+    let out = args
+        .output
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("user-data"));
+    if let Err(e) = std::fs::write(&out, &ud) {
+        return fail(1, &format!("cannot write {}: {e}", out.display()), false);
+    }
+    eprintln!("✓ {} ({} KiB)", out.display(), ud.len().div_ceil(1024));
+    if let Some(iso) = &args.seed {
+        let log_path = l
+            .dirs
+            .state
+            .join("logs")
+            .join(format!("seed-{}.log", std::process::id()));
+        let mut log = match veneer_exec::Log::create(log_path) {
+            Ok(log) => log,
+            Err(e) => return fail(e.exit, &e.message, false),
+        };
+        if let Err(e) = veneer_bake::cloud_init::seed_iso(&ud, iso, &mut log) {
+            eprintln!("{}", log.tail(30));
+            return fail(e.exit, &format!("seed ISO failed: {}", e.message), false);
+        }
+        eprintln!("✓ {} (NoCloud seed, label cidata)", iso.display());
+    }
+    ExitCode::SUCCESS
 }
