@@ -18,6 +18,8 @@
 #   resilience  veneer.lock pins + --frozen, hook retries/timeouts, doctor preflight, and an
 #            offline bundle applied in a container with no network (fingerprint parity)
 #   cloudinit  `bake --target cloud-init` output validated by `cloud-init schema`
+#   vmformats  `--target microvm` launchers, OVA (OVF + streamOptimized VMDK + manifest), and a
+#            fixed 1 MiB-aligned VHD
 #   supply   OCI labels + fingerprint label, SBOMs (CycloneDX validated) and SLSA provenance as
 #            OCI referrers, and cosign sign/attest + verify against a local registry
 #   vm       Firecracker boot + memory snapshot + 2 restores, and the bootable disk under QEMU/KVM.
@@ -31,7 +33,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/../.." && pwd)"
 bin="$repo/target/linux/release/veneer"
 host_bin="${HOST_VENEER:-$repo/target/debug/veneer}"
-SUITES="${SUITES:-distros bake compose install devcontainer oci nix sandbox resilience cloudinit supply vm}"
+SUITES="${SUITES:-distros bake compose install devcontainer oci nix sandbox resilience cloudinit supply vmformats vm}"
 DISTROS="${DISTROS:-ubuntu:24.04 debian:12 alpine:3.20 fedora:41}"
 TOKEN="tok-s3cret-value"
 
@@ -324,6 +326,17 @@ suite_cloudinit() {
   check "cloudinit: the seed ISO is labelled cidata and holds both files" docker run --rm -v "$ud:/t" alpine:3.20 sh -c 'apk add --no-cache xorriso >/dev/null 2>&1 && xorriso -indev /t/seed.iso -pvd_info 2>/dev/null | grep -qi "Volume Id.*cidata" && xorriso -indev /t/seed.iso -ls / 2>/dev/null | grep -qi user-data && xorriso -indev /t/seed.iso -ls / 2>/dev/null | grep -qi meta-data'
 }
 
+# ------------------------------------------------------------------ vmformats
+suite_vmformats() {
+  echo "▸ vmformats"
+  local o="$work/vmf" hs="$work/host-state"; mkdir -p "$o"; printf 'not a kernel' > "$o/vmlinux"
+  local B="env VENEER_STATE_DIR=$hs $host_bin bake $here/vm-fixture --veneer-bin $bin --tag veneer-ct/vm:latest"
+  check "vmformats: microvm bundle has Firecracker, Cloud Hypervisor, and QEMU launchers" sh -c "$B --target microvm --kernel $o/vmlinux -o $o/mvm >/dev/null 2>&1 && for f in vm-config.json cloud-hypervisor.sh qemu.sh cmdline rootfs.ext4 vmlinux; do test -s $o/mvm/\$f || exit 1; done && sh -n $o/mvm/qemu.sh && sh -n $o/mvm/cloud-hypervisor.sh && test -x $o/mvm/qemu.sh"
+  check "vmformats: OVA = OVF first, stream-optimized VMDK, matching SHA-256 manifest" sh -c "$B --target disk -o $o/agent.ova >$logs/ova.log 2>&1 && tar -tf $o/agent.ova > $o/ova.list && sed -n 1p $o/ova.list | grep -qx agent.ovf && grep -qx agent-disk1.vmdk $o/ova.list && grep -qx agent.mf $o/ova.list && mkdir -p $o/x && tar -xf $o/agent.ova -C $o/x && python3 -c 'import xml.dom.minidom,sys; xml.dom.minidom.parse(sys.argv[1])' $o/x/agent.ovf && (cd $o/x && sed -E 's/^SHA256\(([^)]*)\)= (.*)/\2  \1/' agent.mf | shasum -a 256 -c -) && docker run --rm -v $o/x:/w alpine:3.20 sh -c 'apk add --no-cache qemu-img >/dev/null && qemu-img info /w/agent-disk1.vmdk' | grep -qi 'create type: streamOptimized'"
+  check "vmformats: fixed VHD with a whole-MiB virtual size" sh -c "$B --target disk -o $o/agent.vhd --vhd-fixed >$logs/vhd.log 2>&1 && docker run --rm -v $o:/w alpine:3.20 sh -c 'apk add --no-cache qemu-img >/dev/null && qemu-img info -f vpc --output json /w/agent.vhd' > $o/vhd.json && python3 -c 'import json,os,sys; i=json.load(open(sys.argv[1])); v=i[\"virtual-size\"]; assert i[\"format\"]==\"vpc\", i; assert v % 1048576 == 0, v; assert os.path.getsize(sys.argv[2]) == v + 512, (os.path.getsize(sys.argv[2]), v)' $o/vhd.json $o/agent.vhd"
+  rm -rf "$o"
+}
+
 # ------------------------------------------------------------------ supply
 suite_supply() {
   echo "▸ supply"
@@ -364,13 +377,22 @@ suite_vm() {
     [ -x firecracker ] || { curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/$fcv/firecracker-$fcv-\$arch.tgz | tar -xz; cp release-$fcv-\$arch/firecracker-$fcv-\$arch firecracker; }
     [ -s vmlinux ] && file vmlinux | grep -q 'Linux kernel' || curl -fsSL -o vmlinux https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.15/\$arch/vmlinux-6.1.155
     command -v qemu-system-\$arch >/dev/null || sudo DEBIAN_FRONTEND=noninteractive apt-get -qq install -y qemu-system-arm qemu-system-x86 qemu-efi-aarch64 >/dev/null" >/dev/null 2>&1
-  local vb="$shared/veneer-linux"; cp "$bin" "$vb"
+  local vb="$shared/veneer-linux"; cp "$bin" "$vb"; cp "$here/boot-cloudinit.sh" "$shared/boot-cloudinit.sh"
   rm -rf "$shared/bundle"
   check "vm: bake firecracker bundle with a real kernel" env VENEER_STATE_DIR="$work/host-state" "$host_bin" bake "$here/vm-fixture" --veneer-bin "$bin" --tag veneer-ct/vm:latest --target firecracker --kernel "$shared/vmlinux" -o "$shared/bundle"
   check "vm: firecracker boots, stages the workspace, and snapshots memory" $kx bash -c "sudo rm -rf /var/tmp/vfc /var/tmp/vfc-run-* && cp -r $shared/bundle /var/tmp/vfc && sudo VENEER_FIRECRACKER=$shared/firecracker $vb vm snapshot /var/tmp/vfc --timeout 240 && test -s /var/tmp/vfc/snapshot/mem && test -s /var/tmp/vfc/snapshot/vmstate"
   for i in 1 2; do
     check "vm: restore #$i resumes the snapshot (no reboot) and runs commands" $kx bash -c "(sleep 1; printf 'echo R$i=\$IN_VM-\$((6*7)); cat /work/default/hello.txt; echo b > /proc/sysrq-trigger\n') | timeout 60 sudo VENEER_FIRECRACKER=$shared/firecracker $vb vm restore /var/tmp/vfc --run-dir /var/tmp/vfc-run-$i > /var/tmp/vfc-r$i.log 2>&1; grep -q 'R$i=yes-42' /var/tmp/vfc-r$i.log && grep -q 'hello from alpine microvm' /var/tmp/vfc-r$i.log && grep -q 'resumed from snapshot' /var/tmp/vfc-r$i.log && ! grep -q 'Run /init' /var/tmp/vfc-r$i.log"
   done
+  # The same bundle on the other VMMs, a qcow2 root disk, and cloud-init on a stock cloud image.
+  $kx bash -c "set -e; cd $shared; arch=\$(uname -m)
+    [ -x cloud-hypervisor ] || { [ \$arch = aarch64 ] && n=cloud-hypervisor-static-aarch64 || n=cloud-hypervisor-static; curl -fsSL -o cloud-hypervisor https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v48.0/\$n && chmod +x cloud-hypervisor; }
+    command -v xorriso >/dev/null || sudo DEBIAN_FRONTEND=noninteractive apt-get -qq install -y xorriso >/dev/null
+    [ -s ubuntu.img ] || curl -fsSL -o ubuntu.img https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-\$([ \$arch = aarch64 ] && echo arm64 || echo amd64).img" >/dev/null 2>&1
+  check "vm: QEMU boots the bundle and runs the workspace phase" $kx bash -c "sudo rm -rf /var/tmp/vq && cp -r $shared/bundle /var/tmp/vq && cd /var/tmp/vq && sudo timeout 180 sh qemu.sh </dev/null > /var/tmp/vq.log 2>&1; grep -q 'veneer: workspace ready' /var/tmp/vq.log"
+  check "vm: Cloud Hypervisor boots the bundle and runs the workspace phase" $kx bash -c "sudo rm -rf /var/tmp/vch && cp -r $shared/bundle /var/tmp/vch && cd /var/tmp/vch && sudo CLOUD_HYPERVISOR=$shared/cloud-hypervisor timeout 180 sh cloud-hypervisor.sh </dev/null > /var/tmp/vch.log 2>&1; grep -q 'veneer: workspace ready' /var/tmp/vch.log"
+  check "vm: a --target qcow2 root disk boots through the QEMU launcher" sh -c "env VENEER_STATE_DIR='$work/host-state' '$host_bin' bake '$here/vm-fixture' --veneer-bin '$bin' --tag veneer-ct/vm:latest --target qcow2 -o '$shared/root.qcow2' >/dev/null 2>&1 && $kx bash -c 'cd /var/tmp/vq && sudo DISK=$shared/root.qcow2 FORMAT=qcow2 timeout 180 sh qemu.sh </dev/null > /var/tmp/vqc.log 2>&1; grep -q \"veneer: workspace ready\" /var/tmp/vqc.log'"
+  check "vm: cloud-init stages the workspace on a stock Ubuntu cloud image" sh -c "env VENEER_STATE_DIR='$work/host-state' '$host_bin' bake '$here/vm-fixture' --target cloud-init --embed-veneer --veneer-bin '$bin' -o '$shared/user-data' --seed '$shared/seed.iso' >/dev/null 2>&1 && $kx bash $shared/boot-cloudinit.sh $shared"
   cp "$here/boot-disk.sh" "$shared/boot-disk.sh"
   check "vm: bootable disk (d2vm) boots under QEMU/KVM and runs the workspace phase" sh -c "env VENEER_STATE_DIR='$work/host-state' '$host_bin' bake '$here/vm-fixture' --veneer-bin '$bin' --tag veneer-ct/vm:latest --target disk -o '$shared/vm.raw' >/dev/null 2>&1 && $kx bash $shared/boot-disk.sh $shared/vm.raw"
 }

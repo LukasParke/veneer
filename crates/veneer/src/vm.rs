@@ -40,10 +40,23 @@ pub struct Machine {
     pub mem_mib: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Vmm {
+    Firecracker,
+    CloudHypervisor,
+    Qemu,
+}
+
 #[derive(Debug, clap::Args)]
 pub struct BootArgs {
     #[command(flatten)]
     pub machine: Machine,
+    /// Which VMM boots the bundle (Cloud Hypervisor and QEMU use the bundle's launch scripts).
+    #[arg(long, value_enum, default_value_t = Vmm::Firecracker)]
+    pub vmm: Vmm,
+    /// Root disk for Cloud Hypervisor/QEMU (default: rootfs.ext4; e.g. a --target qcow2 file).
+    #[arg(long)]
+    pub disk: Option<PathBuf>,
     /// Command to run after the workspace phase (default: a shell on the console).
     #[arg(long)]
     pub cmd: Option<String>,
@@ -186,6 +199,41 @@ pub fn run(cmd: VmCmd) -> ExitCode {
 fn boot(a: BootArgs) -> Result<ExitCode, String> {
     let m = &a.machine;
     check_bundle(&m.bundle)?;
+    if a.vmm != Vmm::Firecracker {
+        let script = m.bundle.join(match a.vmm {
+            Vmm::CloudHypervisor => "cloud-hypervisor.sh",
+            _ => "qemu.sh",
+        });
+        if !script.is_file() {
+            return Err(format!(
+                "{} has no {} (rebake with `--target microvm`)",
+                m.bundle.display(),
+                script.file_name().unwrap().to_string_lossy()
+            ));
+        }
+        let mut c = Command::new("sh");
+        c.arg(&script)
+            .env("VCPUS", m.vcpus.to_string())
+            .env("MEM_MIB", m.mem_mib.to_string());
+        if let Some(cmd) = &a.cmd {
+            c.env(
+                "VENEER_CMDLINE",
+                format!("veneer.cmd={}", cmd.replace(' ', "%20")),
+            );
+        }
+        if let Some(d) = &a.disk {
+            let d = d
+                .canonicalize()
+                .map_err(|e| format!("{}: {e}", d.display()))?;
+            let fmt = match d.extension().and_then(|e| e.to_str()) {
+                Some("qcow2") => "qcow2",
+                _ => "raw",
+            };
+            c.env("DISK", d).env("FORMAT", fmt);
+        }
+        let status = c.status().map_err(|e| e.to_string())?;
+        return Ok(ExitCode::from(status.code().unwrap_or(1) as u8));
+    }
     let fc = firecracker_bin(m)?;
     let cfg = m.bundle.join("vm-config.run.json");
     std::fs::write(&cfg, config(m, a.cmd.as_deref())).map_err(|e| e.to_string())?;

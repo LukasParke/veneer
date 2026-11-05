@@ -14,6 +14,8 @@ pub enum TargetArg {
     Rootfs,
     Qcow2,
     Firecracker,
+    /// Kernel + ext4 rootfs + launchers for Firecracker, Cloud Hypervisor, and QEMU.
+    Microvm,
     Disk,
     /// `#cloud-config` user-data that stages the workspace on a stock cloud image.
     CloudInit,
@@ -46,6 +48,9 @@ pub struct BakeArgs {
     /// Guest kernel (uncompressed vmlinux) for --target firecracker.
     #[arg(long)]
     pub kernel: Option<PathBuf>,
+    /// --target disk -o x.vhd: fixed-size, 1 MiB-aligned VHD (Hyper-V/Azure).
+    #[arg(long)]
+    pub vhd_fixed: bool,
     /// --target cloud-init: also write a NoCloud seed ISO (label `cidata`).
     #[arg(long, value_name = "ISO")]
     pub seed: Option<PathBuf>,
@@ -141,7 +146,7 @@ pub fn run(args: BakeArgs) -> ExitCode {
             TargetArg::Oci => Target::Oci,
             TargetArg::Rootfs => Target::Rootfs,
             TargetArg::Qcow2 => Target::Qcow2,
-            TargetArg::Firecracker => Target::Firecracker,
+            TargetArg::Firecracker | TargetArg::Microvm => Target::Firecracker,
             TargetArg::Disk => Target::Disk,
             TargetArg::CloudInit => unreachable!("handled above"),
         },
@@ -153,6 +158,7 @@ pub fn run(args: BakeArgs) -> ExitCode {
         output: args.output.clone(),
         context_dir: args.context.clone(),
         kernel: args.kernel.clone(),
+        vhd_fixed: args.vhd_fixed,
         spec_in_image: format!(
             "{}/{}",
             veneer_bake::PROJECT_DIR,
