@@ -28,9 +28,6 @@ pub enum Target {
     /// A bootable VM disk (kernel + bootloader, via d2vm) whose boot runs the workspace
     /// phase. Format from the output extension: raw, qcow2, vmdk, vhd, vdi.
     Disk,
-    /// `Disk` (raw), uploaded to S3, imported as an EBS snapshot (EC2 VM Import), and
-    /// registered as an AMI.
-    Ami,
 }
 
 #[derive(Debug, Clone)]
@@ -47,8 +44,6 @@ pub struct BakeOptions {
     pub context_dir: Option<PathBuf>,
     /// Guest kernel (uncompressed vmlinux) for `firecracker`.
     pub kernel: Option<PathBuf>,
-    /// AMI publishing.
-    pub ami: Option<AmiOptions>,
     /// In-image spec path, used by the microVM init shim.
     pub spec_in_image: String,
 }
@@ -73,16 +68,6 @@ cmd=$(sed -n 's/.*veneer\.cmd=\([^ ]*\).*/\1/p' /proc/cmdline | sed 's/%20/ /g')
 exec veneer exec {spec_in_image} -- ${{cmd:-/bin/sh}}
 "#
     )
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct AmiOptions {
-    /// S3 bucket for the disk upload (VM Import reads from S3).
-    pub bucket: Option<String>,
-    pub name: String,
-    pub region: Option<String>,
-    /// Register this existing EBS snapshot instead of uploading (e.g. made with coldsnap).
-    pub snapshot_id: Option<String>,
 }
 
 /// Boot services that run the workspace phase when a VM disk boots (systemd and OpenRC).
@@ -124,8 +109,6 @@ pub struct Baked {
     pub id: Option<String>,
     pub rootfs: Option<PathBuf>,
     pub containerfile: String,
-    /// Registered AMI id (`--target ami`).
-    pub ami: Option<String>,
 }
 
 const SKIP_DIRS: &[&str] = &[".git", "target", "node_modules", ".venv", ".veneer-state"];
@@ -364,7 +347,6 @@ pub fn build(ctx: &Path, opts: &BakeOptions, log: &mut Log) -> Result<Baked> {
         id,
         rootfs: None,
         containerfile,
-        ami: None,
     };
     match opts.target {
         Target::Oci => {}
@@ -398,18 +380,12 @@ pub fn build(ctx: &Path, opts: &BakeOptions, log: &mut Log) -> Result<Baked> {
                 .map_err(|e| ExecError::failed(e.to_string()))?;
             baked.rootfs = Some(out);
         }
-        Target::Disk | Target::Ami => {
-            let out = match opts.target {
-                Target::Ami => ctx.join("disk.raw"),
-                _ => opts
-                    .output
-                    .clone()
-                    .unwrap_or_else(|| PathBuf::from("disk.qcow2")),
-            };
+        Target::Disk => {
+            let out = opts
+                .output
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("disk.qcow2"));
             disk(ctx, opts, &out, log)?;
-            if opts.target == Target::Ami {
-                baked.ami = Some(publish_ami(&out, opts, log)?);
-            }
             baked.rootfs = Some(out);
         }
         Target::Qcow2 => {
@@ -542,7 +518,7 @@ fn disk(ctx: &Path, opts: &BakeOptions, out: &Path, log: &mut Log) -> Result<()>
                 "4G",
             ])
             .args(["--platform", &platform])
-            // arm64 QEMU/KVM consoles are PL011 (ttyAMA0); EC2 and amd64 use ttyS0. The last
+            // arm64 QEMU/KVM consoles are PL011 (ttyAMA0); amd64 uses ttyS0. The last
             // `console=` becomes /dev/console, where the boot service reports progress.
             .args([
                 "--append-to-cmdline",
@@ -557,157 +533,4 @@ fn disk(ctx: &Path, opts: &BakeOptions, out: &Path, log: &mut Log) -> Result<()>
     std::fs::rename(work.join(&name), out)
         .or_else(|_| std::fs::copy(work.join(&name), out).map(|_| ()))
         .map_err(|e| ExecError::failed(format!("cannot place disk at {}: {e}", out.display())))
-}
-
-/// `aws` CLI: the host's, or the official amazon/aws-cli image with credentials passed through.
-fn aws(args: &[&str], mount: Option<&Path>, log: &mut Log) -> Result<String> {
-    let host_aws = std::env::var_os("PATH").and_then(|p| {
-        std::env::split_paths(&p)
-            .map(|d| d.join("aws"))
-            .find(|p| p.is_file())
-    });
-    let mut c = match host_aws {
-        Some(bin) => {
-            let mut c = Command::new(bin);
-            c.args(args);
-            c
-        }
-        None => {
-            let mut c = Command::new("docker");
-            c.args(["run", "--rm", "--network", "host"]);
-            for k in [
-                "AWS_ACCESS_KEY_ID",
-                "AWS_SECRET_ACCESS_KEY",
-                "AWS_SESSION_TOKEN",
-                "AWS_REGION",
-                "AWS_DEFAULT_REGION",
-                "AWS_PROFILE",
-                "AWS_ENDPOINT_URL",
-            ] {
-                if std::env::var_os(k).is_some() {
-                    c.args(["-e", k]);
-                }
-            }
-            if let Some(home) = std::env::var_os("HOME") {
-                let aws_dir = Path::new(&home).join(".aws");
-                if aws_dir.is_dir() {
-                    c.arg("-v")
-                        .arg(format!("{}:/root/.aws:ro", aws_dir.display()));
-                }
-            }
-            if let Some(m) = mount {
-                c.arg("-v")
-                    .arg(format!("{}:{}:ro", m.display(), m.display()));
-            }
-            c.arg("amazon/aws-cli").args(args);
-            c
-        }
-    };
-    log.line(&format!("$ aws {}", args.join(" ")));
-    let out = c
-        .output()
-        .map_err(|e| ExecError::failed(format!("cannot run aws: {e}")))?;
-    log.line(&String::from_utf8_lossy(&out.stdout));
-    log.line(&String::from_utf8_lossy(&out.stderr));
-    if !out.status.success() {
-        return Err(ExecError::failed(format!(
-            "aws {} failed: {}",
-            args.first().copied().unwrap_or_default(),
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-}
-
-/// Uploads `disk` and registers an AMI. Returns the AMI id.
-fn publish_ami(disk: &Path, opts: &BakeOptions, log: &mut Log) -> Result<String> {
-    let ami = opts.ami.clone().unwrap_or_default();
-    let region: Vec<&str> = ami
-        .region
-        .as_deref()
-        .map(|r| vec!["--region", r])
-        .unwrap_or_default();
-    let snapshot = match &ami.snapshot_id {
-        Some(s) => s.clone(),
-        None => {
-            let bucket = ami.bucket.as_deref().ok_or_else(|| {
-                ExecError::failed("--target ami needs --s3-bucket (or --snapshot-id)")
-            })?;
-            let key = format!("veneer/{}-{}.raw", ami.name, std::process::id());
-            let dir = disk.parent().unwrap_or(Path::new("."));
-            let disk_s = disk.display().to_string();
-            let dest = format!("s3://{bucket}/{key}");
-            let mut cp = vec!["s3", "cp", disk_s.as_str(), dest.as_str()];
-            cp.extend(region.iter().copied());
-            aws(&cp, Some(dir), log)?;
-            let container = format!("Format=raw,UserBucket={{S3Bucket={bucket},S3Key={key}}}");
-            let mut imp = vec![
-                "ec2",
-                "import-snapshot",
-                "--disk-container",
-                container.as_str(),
-                "--query",
-                "ImportTaskId",
-                "--output",
-                "text",
-            ];
-            imp.extend(region.iter().copied());
-            let task = aws(&imp, None, log)?;
-            loop {
-                let mut d = vec![
-                    "ec2",
-                    "describe-import-snapshot-tasks",
-                    "--import-task-ids",
-                    task.as_str(),
-                    "--query",
-                    "ImportSnapshotTasks[0].SnapshotTaskDetail.[Status,SnapshotId,StatusMessage]",
-                    "--output",
-                    "text",
-                ];
-                d.extend(region.iter().copied());
-                let line = aws(&d, None, log)?;
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                match parts.first().copied() {
-                    Some("completed") => {
-                        break parts.get(1).copied().unwrap_or_default().to_string();
-                    }
-                    Some("deleted") | Some("deleting") => {
-                        return Err(ExecError::failed(format!("EC2 import failed: {line}")));
-                    }
-                    _ => std::thread::sleep(std::time::Duration::from_secs(15)),
-                }
-            }
-        }
-    };
-    let arch = match opts.platform.as_deref() {
-        Some(p) if p.ends_with("amd64") => "x86_64",
-        Some(_) => "arm64",
-        None if std::env::consts::ARCH == "aarch64" => "arm64",
-        None => "x86_64",
-    };
-    let bdm =
-        format!("DeviceName=/dev/xvda,Ebs={{SnapshotId={snapshot},DeleteOnTermination=true}}");
-    let mut reg = vec![
-        "ec2",
-        "register-image",
-        "--name",
-        ami.name.as_str(),
-        "--architecture",
-        arch,
-        "--root-device-name",
-        "/dev/xvda",
-        "--block-device-mappings",
-        bdm.as_str(),
-        "--virtualization-type",
-        "hvm",
-        "--boot-mode",
-        "uefi",
-        "--ena-support",
-        "--query",
-        "ImageId",
-        "--output",
-        "text",
-    ];
-    reg.extend(region.iter().copied());
-    aws(&reg, None, log)
 }

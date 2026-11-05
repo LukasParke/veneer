@@ -29,8 +29,8 @@ Fly).
 
 - Sandbox creation: `veneer up/ls/enter/rm --provider docker|podman` (parallel `--count`).
 - Nix tool backend: `tools: { "nix:<attr>": latest | <nixpkgs rev> }`.
-- Bake targets `qcow2`, `firecracker` (bundle), `disk` (bootable, via d2vm) and `ami`
-  (S3 + EC2 VM Import + register-image, or `--snapshot-id`).
+- Bake targets `qcow2`, `firecracker` (bundle) and `disk` (bootable, via d2vm). Cloud-specific
+  image publishing (e.g. AMIs) is out of scope; see the standards proposal (2026-11-05).
 - Firecracker memory snapshots: `veneer vm snapshot|restore|boot`.
 - Language server: `veneer lsp` (diagnostics incl. unsaved buffers, hover, completion).
 

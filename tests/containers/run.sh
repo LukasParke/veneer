@@ -15,7 +15,6 @@
 #   oci      oci:// spec sources and extends through a local registry (pushed with oras)
 #   nix      `nix:` tools through Nix (nixos/nix), plus the musl loader guard (V4002)
 #   sandbox  `veneer up/ls/enter/rm`: parallel sandboxes from the baked image (run after bake)
-#   ami      `bake --target ami` against LocalStack: register from a snapshot; S3 upload path
 #   vm       Firecracker boot + memory snapshot + 2 restores, and the bootable disk under QEMU/KVM.
 #            Needs a KVM host sharing $VM_SHARED at the same path, e.g. on macOS (M3+):
 #              limactl start --name veneer-kvm (vz, nestedVirtualization: true, mount /tmp/veneer-fc rw)
@@ -27,7 +26,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/../.." && pwd)"
 bin="$repo/target/linux/release/veneer"
 host_bin="${HOST_VENEER:-$repo/target/debug/veneer}"
-SUITES="${SUITES:-distros bake compose install devcontainer oci nix sandbox ami vm}"
+SUITES="${SUITES:-distros bake compose install devcontainer oci nix sandbox vm}"
 DISTROS="${DISTROS:-ubuntu:24.04 debian:12 alpine:3.20 fedora:41}"
 TOKEN="tok-s3cret-value"
 
@@ -274,24 +273,6 @@ suite_sandbox() {
   check "sandbox: ls lists them" sh -c "'$host_bin' ls | grep -c '^ct-sb-' | grep -qx 3"
   check "sandbox: enter runs with that sandbox's workspace env" sh -c "'$host_bin' enter ct-sb-2 -- sh -c 'echo \$VENEER_WORKSPACE_ID; jq --version' | tr '\n' ' ' | grep -q 'ct-sb-2 jq-1.7.1'"
   check "sandbox: rm --all removes them" sh -c "'$host_bin' rm --all && [ -z \"\$('$host_bin' ls)\" ]"
-}
-
-# ------------------------------------------------------------------ ami
-suite_ami() {
-  echo "▸ ami"
-  local ls_name="veneer-ct-localstack"
-  docker rm -f "$ls_name" >/dev/null 2>&1
-  docker run -d --name "$ls_name" -p 4566:4566 localstack/localstack:4 >/dev/null
-  for _ in $(seq 1 60); do curl -fsS localhost:4566/_localstack/health >/dev/null 2>&1 && break; sleep 2; done
-  local env=(env AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1 AWS_ENDPOINT_URL=http://localhost:4566 VENEER_STATE_DIR="$work/host-state")
-  awsc() { docker run --rm --network host -e AWS_ACCESS_KEY_ID=test -e AWS_SECRET_ACCESS_KEY=test -e AWS_DEFAULT_REGION=us-east-1 -e AWS_ENDPOINT_URL=http://localhost:4566 amazon/aws-cli "$@"; }
-  local vol snap
-  vol=$(awsc ec2 create-volume --size 4 --availability-zone us-east-1a --query VolumeId --output text)
-  snap=$(awsc ec2 create-snapshot --volume-id "$vol" --query SnapshotId --output text)
-  check "ami: bootable disk + register-image from a snapshot" sh -c "ami=\$(${env[*]} '$host_bin' bake '$here/vm-fixture' --veneer-bin '$bin' --tag veneer-ct/vm:latest --target ami --snapshot-id $snap --ami-name veneer-ct-ami 2>$logs/ami1.log) && docker run --rm --network host -e AWS_ACCESS_KEY_ID=test -e AWS_SECRET_ACCESS_KEY=test -e AWS_DEFAULT_REGION=us-east-1 -e AWS_ENDPOINT_URL=http://localhost:4566 amazon/aws-cli ec2 describe-images --image-ids \$ami --query 'Images[0].[Name,BootMode]' --output text | grep -q 'veneer-ct-ami.*uefi'"
-  awsc s3 mb s3://veneer-ct-ami >/dev/null 2>&1
-  check "ami: disk uploaded to S3, then EC2 VM Import is called" sh -c "${env[*]} '$host_bin' bake '$here/vm-fixture' --veneer-bin '$bin' --tag veneer-ct/vm:latest --target ami --s3-bucket veneer-ct-ami --ami-name veneer-ct-up > $logs/ami2.log 2>&1; grep -q 'ImportSnapshot' $logs/ami2.log && docker run --rm --network host -e AWS_ACCESS_KEY_ID=test -e AWS_SECRET_ACCESS_KEY=test -e AWS_DEFAULT_REGION=us-east-1 -e AWS_ENDPOINT_URL=http://localhost:4566 amazon/aws-cli s3 ls s3://veneer-ct-ami/veneer/ | grep -q 'veneer-ct-up-.*\.raw'"
-  docker rm -f "$ls_name" >/dev/null
 }
 
 # ------------------------------------------------------------------ vm

@@ -47,7 +47,7 @@ veneer diff                         # what would run, and why
 veneer exec -- <cmd>                # run with the workspace env and tools on PATH
 veneer env --format sh|json|dotenv  # print the env (secrets masked)
 veneer down [--rm]                  # stop services (and delete the workspace)
-veneer bake --target oci|rootfs|qcow2|disk|ami|firecracker   # image, ext4, VM disks, AMI, microVM
+veneer bake --target oci|rootfs|qcow2|disk|firecracker   # image, ext4, VM disks, microVM
                                     #   (--overlay/--set carry into the image)
 veneer up --count N [--image I]     # create N sandboxes (docker|podman), stage each
 veneer ls | enter <id> | rm --all   # manage sandboxes
