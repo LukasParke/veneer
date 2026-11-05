@@ -4,6 +4,7 @@ mod bake;
 mod check;
 mod feature;
 mod init;
+mod k8s;
 mod lsp;
 mod render;
 mod run;
@@ -66,6 +67,9 @@ enum Command {
     Enter(sandbox::EnterArgs),
     /// Remove sandboxes.
     Rm(sandbox::RmArgs),
+    /// Render the spec for an orchestrator (Kubernetes).
+    #[command(subcommand)]
+    Render(k8s::RenderCmd),
     /// Language server (stdio): diagnostics, hover, completion for veneer specs.
     Lsp,
     /// Boot Firecracker bundles and take/restore memory snapshots.
@@ -98,6 +102,7 @@ fn main() -> ExitCode {
         Command::Internal(cmd) => feature::run(cmd),
         Command::Up(args) => sandbox::up(args),
         Command::Lsp => lsp::run(),
+        Command::Render(cmd) => k8s::run(cmd),
         Command::Vm(cmd) => vm::run(cmd),
         Command::Ls(args) => sandbox::ls(args),
         Command::Enter(args) => sandbox::enter(args),

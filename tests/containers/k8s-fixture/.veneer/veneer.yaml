@@ -1,0 +1,20 @@
+# Kubernetes fixture: an image service (sidecar), an env secret, and a workspace hook that
+# talks to the sidecar.
+version: 1
+base: alpine:3.20
+secrets:
+  api_token: { from: env, var: API_TOKEN }
+env:
+  API_TOKEN: "{{ secrets.api_token }}"
+workspace:
+  root: "/work/{{ workspace.id }}"
+  files:
+    - { src: hello.txt.j2, dest: hello.txt }
+services:
+  web:
+    image: nginx:1.27-alpine
+    ports: ["8080:80"]
+    healthcheck: { http: "http://127.0.0.1:80/", interval: 1s, retries: 60 }
+hooks:
+  workspace:
+    - { run: "wget -qO- http://127.0.0.1:80/ > web.html", creates: web.html }

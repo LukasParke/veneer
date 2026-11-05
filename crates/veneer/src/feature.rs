@@ -30,6 +30,8 @@ pub struct FeatureArgs {
 pub enum Internal {
     /// Install a Dev Container Feature.
     Feature(FeatureArgs),
+    /// Copy this binary to DEST (Kubernetes init containers from the scratch image).
+    CopySelf { dest: std::path::PathBuf },
 }
 
 fn env_name(option: &str) -> String {
@@ -73,7 +75,10 @@ fn fetch(dirs: &Dirs, id: &str, base: Option<&Path>) -> Result<PathBuf, String> 
 }
 
 pub fn run(cmd: Internal) -> ExitCode {
-    let Internal::Feature(args) = cmd;
+    let args = match cmd {
+        Internal::Feature(args) => args,
+        Internal::CopySelf { dest } => return copy_self(&dest),
+    };
     let dirs = Dirs::from_env();
     let dir = match fetch(&dirs, &args.id, args.base.as_deref()) {
         Ok(d) => d,
@@ -160,4 +165,22 @@ pub fn run(cmd: Internal) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+fn copy_self(dest: &std::path::Path) -> ExitCode {
+    use std::os::unix::fs::PermissionsExt;
+    let result = std::env::current_exe().and_then(|exe| {
+        if let Some(d) = dest.parent() {
+            std::fs::create_dir_all(d)?;
+        }
+        std::fs::copy(exe, dest)?;
+        std::fs::set_permissions(dest, std::fs::Permissions::from_mode(0o755))
+    });
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: cannot copy veneer to {}: {e}", dest.display());
+            ExitCode::from(1)
+        }
+    }
 }

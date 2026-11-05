@@ -788,6 +788,11 @@ pub fn plan(
                 }
             }
         }
+        // Image services run as sidecars elsewhere (e.g. `veneer render k8s`).
+        if std::env::var_os("VENEER_EXTERNAL_SERVICES").is_some() {
+            compose_files.clear();
+            generated.clear();
+        }
         if !compose_files.is_empty() || !generated.is_empty() {
             let generated = (!generated.is_empty()).then(|| {
                 serde_json::to_string_pretty(&serde_json::json!({ "services": generated })).unwrap()

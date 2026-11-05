@@ -20,6 +20,8 @@
 #   cloudinit  `bake --target cloud-init` output validated by `cloud-init schema`
 #   vmformats  `--target microvm` launchers, OVA (OVF + streamOptimized VMDK + manifest), and a
 #            fixed 1 MiB-aligned VHD
+#   k8s      `veneer render k8s` validated by kubeconform, then applied to a kind cluster: an
+#            Indexed Job of 3 workspaces with a native-sidecar service and a Secret
 #   supply   OCI labels + fingerprint label, SBOMs (CycloneDX validated) and SLSA provenance as
 #            OCI referrers, and cosign sign/attest + verify against a local registry
 #   vm       Firecracker boot + memory snapshot + 2 restores, and the bootable disk under QEMU/KVM.
@@ -33,7 +35,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/../.." && pwd)"
 bin="$repo/target/linux/release/veneer"
 host_bin="${HOST_VENEER:-$repo/target/debug/veneer}"
-SUITES="${SUITES:-distros bake compose install devcontainer oci nix sandbox resilience cloudinit supply vmformats vm}"
+SUITES="${SUITES:-distros bake compose install devcontainer oci nix sandbox resilience cloudinit supply vmformats k8s vm}"
 DISTROS="${DISTROS:-ubuntu:24.04 debian:12 alpine:3.20 fedora:41}"
 TOKEN="tok-s3cret-value"
 
@@ -335,6 +337,29 @@ suite_vmformats() {
   check "vmformats: OVA = OVF first, stream-optimized VMDK, matching SHA-256 manifest" sh -c "$B --target disk -o $o/agent.ova >$logs/ova.log 2>&1 && tar -tf $o/agent.ova > $o/ova.list && sed -n 1p $o/ova.list | grep -qx agent.ovf && grep -qx agent-disk1.vmdk $o/ova.list && grep -qx agent.mf $o/ova.list && mkdir -p $o/x && tar -xf $o/agent.ova -C $o/x && python3 -c 'import xml.dom.minidom,sys; xml.dom.minidom.parse(sys.argv[1])' $o/x/agent.ovf && (cd $o/x && sed -E 's/^SHA256\(([^)]*)\)= (.*)/\2  \1/' agent.mf | shasum -a 256 -c -) && docker run --rm -v $o/x:/w alpine:3.20 sh -c 'apk add --no-cache qemu-img >/dev/null && qemu-img info /w/agent-disk1.vmdk' | grep -qi 'create type: streamOptimized'"
   check "vmformats: fixed VHD with a whole-MiB virtual size" sh -c "$B --target disk -o $o/agent.vhd --vhd-fixed >$logs/vhd.log 2>&1 && docker run --rm -v $o:/w alpine:3.20 sh -c 'apk add --no-cache qemu-img >/dev/null && qemu-img info -f vpc --output json /w/agent.vhd' > $o/vhd.json && python3 -c 'import json,os,sys; i=json.load(open(sys.argv[1])); v=i[\"virtual-size\"]; assert i[\"format\"]==\"vpc\", i; assert v % 1048576 == 0, v; assert os.path.getsize(sys.argv[2]) == v + 512, (os.path.getsize(sys.argv[2]), v)' $o/vhd.json $o/agent.vhd"
   rm -rf "$o"
+}
+
+# ------------------------------------------------------------------ k8s
+suite_k8s() {
+  echo "▸ k8s"
+  local hs="$work/host-state" cl="veneer-ct" kube="$work/kubeconfig"
+  local M="env MISE_DATA_DIR=$work/mise MISE_CACHE_DIR=$work/mise-cache MISE_YES=1 mise x aqua:kubernetes-sigs/kind@0.30.0 aqua:kubernetes/kubectl@1.34.1 --"
+  check "k8s: bake the workspace image" env VENEER_STATE_DIR="$hs" "$host_bin" bake "$here/k8s-fixture" --veneer-bin "$bin" --tag veneer-ct/k8s:v1
+  check "k8s: render an Indexed Job of 3" sh -c "env VENEER_STATE_DIR=$hs '$host_bin' render k8s '$here/k8s-fixture' --image veneer-ct/k8s:v1 --count 3 --name agent -o $work/job.yaml && grep -q 'completionMode: \"Indexed\"' $work/job.yaml && grep -q 'restartPolicy: \"Always\"' $work/job.yaml && grep -q secretKeyRef $work/job.yaml"
+  check "k8s: kubeconform accepts the manifest" docker run --rm -v "$work:/w" ghcr.io/yannh/kubeconform:v0.7.0 -strict -summary /w/job.yaml
+  $M kind delete cluster --name "$cl" >/dev/null 2>&1
+  check "k8s: kind cluster up" $M kind create cluster --name "$cl" --kubeconfig "$kube" --wait 120s
+  local K="$M kubectl --kubeconfig $kube"
+  $M kind load docker-image veneer-ct/k8s:v1 --name "$cl" >/dev/null 2>&1
+  $K create secret generic veneer-secrets --from-literal=api_token=k8s-$TOKEN >/dev/null 2>&1
+  check "k8s: all 3 workspaces become Ready" sh -c "$K apply -f $work/job.yaml >/dev/null && $K wait --for=condition=Ready pod -l app.kubernetes.io/name=agent --timeout=300s"
+  local pod; pod=$($K get pod -l app.kubernetes.io/name=agent -o name 2>/dev/null | head -1)
+  local idx; idx=$($K get "$pod" -o jsonpath='{.metadata.annotations.batch\.kubernetes\.io/job-completion-index}' 2>/dev/null)
+  check "k8s: each pod has its own workspace id, the secret, and the sidecar" sh -c "$K exec $pod -c workspace -- sh -c 'cat /work/agent-$idx/hello.txt' | grep -q 'hello agent-$idx token-len=$(( ${#TOKEN} + 4 ))' && $K exec $pod -c workspace -- grep -qi nginx /work/agent-$idx/web.html"
+  check "k8s: veneer verify passes inside the pod" $K exec "$pod" -c workspace -- sh -c "veneer verify /opt/veneer/project/.veneer/veneer.yaml --id agent-$idx"
+  check "k8s: the secret value is not in the rendered manifest" sh -c "! grep -q '$TOKEN' $work/job.yaml"
+  $M kind delete cluster --name "$cl" >/dev/null 2>&1
+  docker rmi -f veneer-ct/k8s:v1 >/dev/null 2>&1
 }
 
 # ------------------------------------------------------------------ supply
