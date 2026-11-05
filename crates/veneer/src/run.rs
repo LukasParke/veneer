@@ -329,7 +329,11 @@ pub fn execute(
     };
     let partial = only.is_some();
     let plan = make_plan(l, target, build, workspace, only, json)?;
-    let events = Events::new(json, plan.secret_values.clone());
+    let events = Events::new(json, plan.secret_values.clone()).with_tracer(
+        (!dry_run)
+            .then(veneer_exec::otel::Tracer::from_env)
+            .flatten(),
+    );
     veneer_exec::set_run_timeout(target.timeout);
     if !dry_run {
         let reqs = veneer_steps::doctor::check(&plan);
@@ -390,9 +394,13 @@ pub fn execute(
             }
             continue;
         }
-        applied += runner
-            .run(&steps, &mut journal, &veneer_steps::StepImpls)
-            .map_err(|e| exec_error(e, json))?;
+        applied += match runner.run(&steps, &mut journal, &veneer_steps::StepImpls) {
+            Ok(n) => n,
+            Err(e) => {
+                events.finish_trace(&plan.workspace_id, Some(&e.message));
+                return Err(exec_error(e, json));
+            }
+        };
         if phase == Phase::Workspace {
             for p in veneer_steps::prune_files(&plan, &mut journal.data.files) {
                 events.emit(
@@ -413,6 +421,7 @@ pub fn execute(
         if workspace {
             mark_ready();
         }
+        events.finish_trace(&plan.workspace_id, None);
         let fp = manifest.as_ref().map(|m| m["fingerprint"].clone());
         events.emit(
             "run.done",

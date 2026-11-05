@@ -15,6 +15,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use veneer_plan::{Dirs, Phase, Plan, Step};
 
+pub mod otel;
+
 // ---------------------------------------------------------------- errors
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -284,12 +286,38 @@ pub fn workspace_journal_path(dirs: &Dirs, id: &str) -> PathBuf {
 pub struct Events {
     json: bool,
     secrets: Vec<String>,
+    /// OpenTelemetry tracing, when the OTLP environment enables it.
+    pub tracer: Option<otel::Tracer>,
 }
 
 impl Events {
     pub fn new(json: bool, secrets: Vec<String>) -> Self {
         let secrets = secrets.into_iter().filter(|s| s.len() >= 3).collect();
-        Self { json, secrets }
+        Self {
+            json,
+            secrets,
+            tracer: None,
+        }
+    }
+
+    pub fn with_tracer(mut self, tracer: Option<otel::Tracer>) -> Self {
+        self.tracer = tracer;
+        self
+    }
+
+    /// Closes the run span and exports the trace (warning on stderr if the export fails).
+    pub fn finish_trace(&self, workspace: &str, error: Option<&str>) {
+        let Some(t) = &self.tracer else { return };
+        let body = t.request(
+            "veneer apply",
+            vec![("veneer.workspace.id".into(), workspace.into())],
+            error.map(|e| self.redact(e)),
+        );
+        let body: serde_json::Value =
+            serde_json::from_str(&self.redact(&body.to_string())).unwrap_or(body);
+        if let Err(e) = t.export(&body) {
+            eprintln!("warning: {e}");
+        }
     }
 
     pub fn redact(&self, text: &str) -> String {
@@ -564,6 +592,34 @@ impl<'a> Runner<'a> {
             }
             let mut log = self.log_for(step)?;
             let started = Instant::now();
+            let span = self.events.tracer.as_ref().map(|t| t.start_step());
+            if let (Some(t), Some(sp)) = (&self.events.tracer, &span) {
+                set_current_traceparent(Some(t.traceparent(sp)));
+            }
+            let end_span = |span: Option<otel::StepSpan>,
+                            action: &str,
+                            attempts: u32,
+                            error: Option<String>| {
+                if let (Some(t), Some(sp)) = (&self.events.tracer, span) {
+                    t.end_step(
+                        sp,
+                        &step.id,
+                        vec![
+                            ("veneer.step.id".into(), step.id.clone().into()),
+                            ("veneer.step.group".into(), step.group.clone().into()),
+                            ("veneer.step.phase".into(), step.phase.as_str().into()),
+                            ("veneer.step.action".into(), action.into()),
+                            ("veneer.step.attempts".into(), attempts.into()),
+                            (
+                                "veneer.workspace.id".into(),
+                                self.plan.workspace_id.clone().into(),
+                            ),
+                        ],
+                        error.map(|e| self.events.redact(&e)),
+                    );
+                }
+                set_current_traceparent(None);
+            };
             let verdict = {
                 let mut cx = Cx {
                     plan: self.plan,
@@ -605,6 +661,7 @@ impl<'a> Runner<'a> {
                     fp
                 };
                 journal.set(&step.id, Status::Done, &step.hash, &fp)?;
+                end_span(span, "skip", 0, None);
                 self.events.emit(
                     "step.skip",
                     Some(step),
@@ -667,6 +724,12 @@ impl<'a> Runner<'a> {
                     std::thread::sleep(Duration::from_millis(50));
                 }
             };
+            end_span(
+                span,
+                "apply",
+                attempt + 1,
+                result.as_ref().err().map(|e| e.message.clone()),
+            );
             match result {
                 Ok(fp) => {
                     journal.set(&step.id, Status::Done, &step.hash, &fp)?;

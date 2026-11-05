@@ -54,6 +54,9 @@ pub fn command_env(plan: &Plan, dirs: &Dirs, workspace: bool) -> BTreeMap<String
     if workspace {
         env.extend(plan.env.iter().map(|(k, v)| (k.clone(), v.clone())));
     }
+    if let Some(tp) = veneer_exec::current_traceparent() {
+        env.insert("TRACEPARENT".into(), tp);
+    }
     env
 }
 

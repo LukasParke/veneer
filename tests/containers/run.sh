@@ -22,6 +22,8 @@
 #            fixed 1 MiB-aligned VHD
 #   k8s      `veneer render k8s` validated by kubeconform, then applied to a kind cluster: an
 #            Indexed Job of 3 workspaces with a native-sidecar service and a Secret
+#   otel     OTLP/HTTP traces into an OpenTelemetry Collector: span tree, TRACEPARENT parenting
+#            and propagation into hooks, secret redaction
 #   supply   OCI labels + fingerprint label, SBOMs (CycloneDX validated) and SLSA provenance as
 #            OCI referrers, and cosign sign/attest + verify against a local registry
 #   vm       Firecracker boot + memory snapshot + 2 restores, and the bootable disk under QEMU/KVM.
@@ -35,7 +37,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/../.." && pwd)"
 bin="$repo/target/linux/release/veneer"
 host_bin="${HOST_VENEER:-$repo/target/debug/veneer}"
-SUITES="${SUITES:-distros bake compose install devcontainer oci nix sandbox resilience cloudinit supply vmformats k8s vm}"
+SUITES="${SUITES:-distros bake compose install devcontainer oci nix sandbox resilience cloudinit supply vmformats k8s otel vm}"
 DISTROS="${DISTROS:-ubuntu:24.04 debian:12 alpine:3.20 fedora:41}"
 TOKEN="tok-s3cret-value"
 
@@ -360,6 +362,38 @@ suite_k8s() {
   check "k8s: the secret value is not in the rendered manifest" sh -c "! grep -q '$TOKEN' $work/job.yaml"
   $M kind delete cluster --name "$cl" >/dev/null 2>&1
   docker rmi -f veneer-ct/k8s:v1 >/dev/null 2>&1
+}
+
+# ------------------------------------------------------------------ otel
+suite_otel() {
+  echo "▸ otel"
+  local net="veneer-ct-otel" col="veneer-ct-collector" name="veneer-ct-otel-ws" out="$work/otel"
+  local tid="4bf92f3577b34da6a3ce929d0e0e4736" psid="00f067aa0ba902b7"
+  mkdir -p "$out"; chmod 777 "$out"
+  docker network create "$net" >/dev/null 2>&1
+  docker rm -f "$col" >/dev/null 2>&1
+  docker run -d --name "$col" --network "$net" -v "$here/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro" -v "$out:/out" otel/opentelemetry-collector-contrib:0.164.0 >/dev/null
+  start "$name" alpine:3.20 --network "$net" -e OTEL_EXPORTER_OTLP_ENDPOINT=http://$col:4318 -e OTEL_SERVICE_NAME=veneer-ct -e TRACEPARENT=00-$tid-$psid-01
+  docker cp "$here/otel-fixture" "$name:/p" >/dev/null
+  sleep 3
+  check "otel: apply exports a trace" sh -c "docker exec $name veneer apply /p --id o1 --json | grep -q '\"ok\":true' && for i in \$(seq 1 20); do [ -s $out/traces.json ] && break; sleep 1; done; [ -s $out/traces.json ]"
+  check "otel: run span is a child of TRACEPARENT; step spans are children of the run" python3 -c "
+import json
+spans=[s for l in open('$out/traces.json') for r in json.loads(l)['resourceSpans'] for ss in r['scopeSpans'] for s in ss['spans']]
+res=[a for l in open('$out/traces.json') for r in json.loads(l)['resourceSpans'] for a in r['resource']['attributes']]
+assert {'key':'service.name','value':{'stringValue':'veneer-ct'}} in res, res
+run=[s for s in spans if s['name']=='veneer apply'][0]
+assert all(s['traceId']=='$tid' for s in spans)
+assert run['parentSpanId']=='$psid', run
+steps=[s for s in spans if s is not run]
+assert len(steps)>=3 and all(s['parentSpanId']==run['spanId'] for s in steps), steps
+assert any(a['key']=='veneer.step.action' for a in steps[0]['attributes'])
+"
+  check "otel: hooks receive a TRACEPARENT for their own step span" sh -c "tp=\$(docker exec $name cat /work/o1/tp.txt); echo \$tp | grep -q '^00-$tid-[0-9a-f]\{16\}-01\$' && grep -q \"\$(echo \$tp | cut -d- -f3)\" $out/traces.json"
+  check "otel: no secret values in exported spans" sh -c "! grep -q '$TOKEN' $out/traces.json"
+  check "otel: an unreachable collector never fails the run" sh -c "docker exec -e OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:9 $name veneer apply /p --id o2 --json | grep -q '\"ok\":true'"
+  docker rm -f "$name" "$col" >/dev/null
+  docker network rm "$net" >/dev/null 2>&1
 }
 
 # ------------------------------------------------------------------ supply

@@ -1712,12 +1712,15 @@ dependencies = [
 name = "veneer-exec"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "fs4",
+ "hex",
  "libc",
  "serde",
  "serde_json",
  "signal-hook",
  "tempfile",
+ "ureq",
  "veneer-plan",
 ]
 
