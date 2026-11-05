@@ -53,6 +53,12 @@ pub struct PlanOptions {
     pub only: Option<String>,
     /// `--set k=v` overrides for `vars`.
     pub sets: Vec<(String, String)>,
+    /// Pins from `veneer.lock`.
+    pub pins: Pins,
+    /// Fail when a tool, image, or repo has no pin (`--frozen`).
+    pub frozen: bool,
+    /// Render secrets as empty strings instead of resolving them (`veneer lock`, `fetch`).
+    pub no_secrets: bool,
 }
 
 impl Default for PlanOptions {
@@ -63,6 +69,9 @@ impl Default for PlanOptions {
             workspace: true,
             only: None,
             sets: Vec::new(),
+            pins: Pins::default(),
+            frozen: false,
+            no_secrets: false,
         }
     }
 }
@@ -134,6 +143,9 @@ fn step(
         phase,
         kind,
         hash,
+        retries: 0,
+        retry_any: false,
+        timeout_ms: None,
     }
 }
 
@@ -309,12 +321,23 @@ pub fn plan(
     if opts.workspace && !spec.secrets.is_empty() {
         let mut map = Vec::new();
         for (name, s) in &spec.secrets {
-            let value = resolve_secret(name, s, &r)?;
-            secret_values.push(value.clone());
+            let value = if opts.no_secrets {
+                String::new()
+            } else {
+                let v = resolve_secret(name, s, &r)?;
+                secret_values.push(v.clone());
+                v
+            };
             map.push((name.clone(), Value::from(value)));
         }
         r.set("secrets", Value::from_iter(map));
     }
+    let unpinned = |what: &str, key: &str| PlanError {
+        exit: 2,
+        message: format!(
+            "V1006: {what} `{key}` is not pinned in veneer.lock (--frozen); run `veneer lock`"
+        ),
+    };
 
     // Native service names (for ports) are known before rendering.
     let native_names: Vec<String> = spec
@@ -453,6 +476,14 @@ pub fn plan(
                 &[],
             ));
         }
+        for (name, version) in tools.iter_mut() {
+            let key = tool_key(name, version);
+            match opts.pins.tools.get(&key) {
+                Some(pinned) => *version = pinned.clone(),
+                None if opts.frozen => return Err(unpinned("tool", &key)),
+                None => {}
+            }
+        }
         if !tools.is_empty() && want("tools", "tools") {
             steps.push(step(
                 "tools",
@@ -519,11 +550,12 @@ pub fn plan(
                 .iter()
                 .map(|i| rs(i))
                 .collect::<Result<Vec<_>, _>>()?;
+            let digests = image_pins(&refs, opts, &unpinned)?;
             steps.push(step(
                 "images",
                 "images",
                 Phase::Build,
-                StepKind::Images { refs },
+                StepKind::Images { refs, digests },
                 &[],
             ));
         }
@@ -579,13 +611,21 @@ pub fn plan(
                     .display()
                     .to_string();
                 }
-                let git_ref = repo.git_ref.as_deref().map(rs).transpose()?;
+                let mut git_ref = repo.git_ref.as_deref().map(rs).transpose()?;
                 let path = rs(&repo.path)?;
                 let mode = match repo.mode {
                     veneer_spec::RepoMode::Clone => RepoMode::Clone,
                     veneer_spec::RepoMode::Worktree => RepoMode::Worktree,
                     veneer_spec::RepoMode::Copy => RepoMode::Copy,
                 };
+                if mode != RepoMode::Copy {
+                    let key = repo_key(&url, git_ref.as_deref());
+                    match opts.pins.repos.get(&key) {
+                        Some(commit) => git_ref = Some(commit.clone()),
+                        None if opts.frozen => return Err(unpinned("repo", &key)),
+                        None => {}
+                    }
+                }
                 steps.push(step(
                     format!("repo:{path}"),
                     "workspace",
@@ -642,11 +682,12 @@ pub fn plan(
                 .iter()
                 .map(|i| rs(i))
                 .collect::<Result<Vec<_>, _>>()?;
+            let digests = image_pins(&refs, opts, &unpinned)?;
             steps.push(step(
                 "images.load",
                 "workspace",
                 Phase::Workspace,
-                StepKind::ImagesLoad { refs },
+                StepKind::ImagesLoad { refs, digests },
                 &[],
             ));
         }
@@ -785,6 +826,7 @@ pub fn plan(
     if let Some(only) = &opts.only {
         steps.retain(|s| &s.group == only || &s.id == only);
     }
+    apply_retry_policy(spec, &mut steps)?;
 
     Ok(Planned {
         plan: Plan {
@@ -797,6 +839,68 @@ pub fn plan(
         },
         warnings,
     })
+}
+
+fn image_pins(
+    refs: &[String],
+    opts: &PlanOptions,
+    unpinned: &dyn Fn(&str, &str) -> PlanError,
+) -> Result<BTreeMap<String, String>, PlanError> {
+    let mut out = BTreeMap::new();
+    for r in refs {
+        match opts.pins.images.get(r) {
+            Some(d) => {
+                out.insert(r.clone(), d.clone());
+            }
+            None if opts.frozen && !r.contains('@') => return Err(unpinned("image", r)),
+            None => {}
+        }
+    }
+    Ok(out)
+}
+
+/// Default network retries (standards proposal §5.4.2).
+pub const DEFAULT_RETRIES: u32 = 4;
+
+/// Sets retries and timeouts: network steps retry transient failures; hooks retry only when
+/// they ask to (and then on any failure).
+fn apply_retry_policy(spec: &Spec, steps: &mut [Step]) -> Result<(), PlanError> {
+    let dur = |s: &str| {
+        parse_duration_ms(s)
+            .ok_or_else(|| PlanError::spec(format!("`{s}` is not a duration (e.g. 90s, 10m)")))
+    };
+    let default_timeout = spec.defaults.timeout.as_deref().map(dur).transpose()?;
+    let retries = spec.defaults.retries.unwrap_or(DEFAULT_RETRIES);
+    for st in steps.iter_mut() {
+        st.timeout_ms = default_timeout;
+        match &st.kind {
+            StepKind::Packages { .. }
+            | StepKind::Tools { .. }
+            | StepKind::Nix { .. }
+            | StepKind::Deps { .. }
+            | StepKind::Images { .. }
+            | StepKind::Repo { .. }
+            | StepKind::Compose { .. } => st.retries = retries,
+            StepKind::Hook { .. } => {
+                let (list, idx) = match st.id.split_once(':') {
+                    Some(("hook.build", i)) => (&spec.hooks.build, i.parse::<usize>().ok()),
+                    Some(("hook.workspace", i)) => (&spec.hooks.workspace, i.parse::<usize>().ok()),
+                    _ => continue,
+                };
+                if let Some(Hook::Full(h)) = idx.and_then(|i| list.get(i)) {
+                    if let Some(n) = h.retries {
+                        st.retries = n;
+                        st.retry_any = true;
+                    }
+                    if let Some(t) = &h.timeout {
+                        st.timeout_ms = Some(dur(t)?);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 type Rs<'a> = dyn Fn(&str) -> Result<String, PlanError> + 'a;

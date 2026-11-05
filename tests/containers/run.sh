@@ -15,6 +15,9 @@
 #   oci      oci:// spec sources and extends through a local registry (pushed with oras)
 #   nix      `nix:` tools through Nix (nixos/nix), plus the musl loader guard (V4002)
 #   sandbox  `veneer up/ls/enter/rm`: parallel sandboxes from the baked image (run after bake)
+#   resilience  veneer.lock pins + --frozen, hook retries/timeouts, doctor preflight, and an
+#            offline bundle applied in a container with no network (fingerprint parity)
+#   cloudinit  `bake --target cloud-init` output validated by `cloud-init schema`
 #   vm       Firecracker boot + memory snapshot + 2 restores, and the bootable disk under QEMU/KVM.
 #            Needs a KVM host sharing $VM_SHARED at the same path, e.g. on macOS (M3+):
 #              limactl start --name veneer-kvm (vz, nestedVirtualization: true, mount /tmp/veneer-fc rw)
@@ -26,7 +29,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/../.." && pwd)"
 bin="$repo/target/linux/release/veneer"
 host_bin="${HOST_VENEER:-$repo/target/debug/veneer}"
-SUITES="${SUITES:-distros bake compose install devcontainer oci nix sandbox vm}"
+SUITES="${SUITES:-distros bake compose install devcontainer oci nix sandbox resilience cloudinit vm}"
 DISTROS="${DISTROS:-ubuntu:24.04 debian:12 alpine:3.20 fedora:41}"
 TOKEN="tok-s3cret-value"
 
@@ -96,6 +99,11 @@ suite_distros() {
     check "$image: diff reports everything up to date" sh -c "! docker exec $name veneer diff /fixture $ov --id t1 | grep -q '^+'"
     check "$image: second workspace is isolated" sh -c "docker exec $name sh -c '$A --id t2' | grep -q '\"ok\":true' && docker exec $name test -f /work/t2/app/.env && [ \"\$(docker exec $name cat /var/lib/veneer/workspaces/t1/ports.json)\" != \"\$(docker exec $name cat /var/lib/veneer/workspaces/t2/ports.json)\" ]"
     docker exec "$name" cat /var/lib/veneer/build.json >"$work/$name-clean-build.json"
+    local fp1
+    fp1=$(docker exec "$name" python3 -c 'import json; print(json.load(open("/var/lib/veneer/workspaces/t1/manifest.json"))["fingerprint"])')
+    check "$image: t1 and t2 share one environment fingerprint" sh -c "[ -n '$fp1' ] && docker exec $name python3 -c 'import json; print(json.load(open(\"/var/lib/veneer/workspaces/t2/manifest.json\"))[\"fingerprint\"])' | grep -qx '$fp1'"
+    check "$image: verify passes, and catches a tampered file" sh -c "docker exec $name veneer verify /fixture $ov --id t1 && docker exec $name sh -c 'echo x >> /work/t1/app/.env' && ! docker exec $name veneer verify /fixture $ov --id t1 2>$logs/$name-verify.txt && grep -q '/files/0/sha256' $logs/$name-verify.txt && docker exec $name veneer apply /fixture $ov --id t1 >/dev/null 2>&1 && docker exec $name veneer verify /fixture $ov --id t1 --expect '$fp1'"
+    check "$image: manifest has no secret values" sh -c "! docker exec $name grep -rq '$TOKEN' /var/lib/veneer/workspaces/t1/manifest.json"
 
     # chaos: wipe state, kill -9 the run (and its children) at a random point, twice
     x "veneer down /fixture $ov --id t1 --rm; veneer down /fixture $ov --id t2 --rm; rm -rf /var/lib/veneer /fixture/node_modules /fixture/.jq-version" >/dev/null 2>&1
@@ -123,6 +131,7 @@ EOF
     check "$image: post-chaos rerun is a no-op" sh -c "docker exec $name sh -c '$A --id t3' | grep -q '\"applied\":0'"
     docker exec "$name" cat /var/lib/veneer/build.json >"$work/$name-chaos-build.json"
     check "$image: chaos fingerprints equal a clean run" bash -c "diff <(fingerprints '$work/$name-clean-build.json') <(fingerprints '$work/$name-chaos-build.json')"
+    check "$image: post-chaos workspace has the clean run's environment fingerprint" sh -c "docker exec $name veneer verify /fixture $ov --id t3 --expect '$fp1'"
     check "$image: down stops services" sh -c "docker exec $name veneer down /fixture $ov --id t3 && docker exec $name sh -c 'port=\$(sed -n \"s/.*\\\"web\\\": *\\([0-9]*\\).*/\\1/p\" /var/lib/veneer/workspaces/t3/ports.json); ! curl -fsS --max-time 2 http://127.0.0.1:\$port/ >/dev/null 2>&1'"
     docker rm -f "$name" >/dev/null
   done
@@ -273,6 +282,44 @@ suite_sandbox() {
   check "sandbox: ls lists them" sh -c "'$host_bin' ls | grep -c '^ct-sb-' | grep -qx 3"
   check "sandbox: enter runs with that sandbox's workspace env" sh -c "'$host_bin' enter ct-sb-2 -- sh -c 'echo \$VENEER_WORKSPACE_ID; jq --version' | tr '\n' ' ' | grep -q 'ct-sb-2 jq-1.7.1'"
   check "sandbox: rm --all removes them" sh -c "'$host_bin' rm --all && [ -z \"\$('$host_bin' ls)\" ]"
+}
+
+# ------------------------------------------------------------------ resilience
+suite_resilience() {
+  echo "▸ resilience"
+  local img="buildpack-deps:bookworm-scm" a="veneer-ct-res-a" b="veneer-ct-res-b"
+  start "$a" "$img"
+  docker cp "$here/offline-fixture" "$a:/p" >/dev/null
+  docker cp "$here/resilience-fixture" "$a:/r" >/dev/null
+  x() { docker exec "$a" sh -c "$*"; }
+  check "lock: pins tools, images, and repos in veneer.lock" x "veneer lock /p && python3 -c 'import json,re; l=json.load(open(\"/p/.veneer/veneer.lock\")); assert re.fullmatch(r\"1\\.7(\\.\\d+)?\", l[\"tools\"][\"jq@1.7\"]), l; assert l[\"images\"][\"busybox:1.36\"].startswith(\"sha256:\"); assert len(l[\"repos\"][\"/srv/upstream.git#main\"]) == 40'"
+  check "lock: --frozen apply uses the pins" x "veneer apply /p --frozen --id t1 --json | tee /tmp/frozen.ndjson | grep -q '\"event\":\"run.done\",\"ok\":true' && test \"\$(git -C /work/t1/src rev-parse HEAD)\" = \"\$(python3 -c 'import json; print(json.load(open(\"/p/.veneer/veneer.lock\"))[\"repos\"][\"/srv/upstream.git#main\"])')\""
+  check "lock: --frozen refuses an unpinned image before doing anything" x "sed -i 's/images: \[busybox:1.36\]/images: [busybox:1.36, alpine:3.20]/' /p/.veneer/veneer.yaml; veneer apply /p --frozen --id t9 2>/tmp/f.err; rc=\$?; sed -i 's/, alpine:3.20//' /p/.veneer/veneer.yaml; [ \$rc = 2 ] && grep -q 'V1006' /tmp/f.err && ! test -e /var/lib/veneer/workspaces/t9/journal.json"
+  check "retry: a flaky hook is retried with backoff until it passes" x "rm -f /tmp/flaky; veneer apply /r --id r1 --json > /tmp/retry.ndjson; grep -q '\"event\":\"run.done\",\"ok\":true' /tmp/retry.ndjson && [ \$(grep -c '\"event\":\"step.retry\"' /tmp/retry.ndjson) = 2 ]"
+  check "timeout: a hung hook is killed at its timeout" x "s=\$(date +%s); ! veneer apply /r/.veneer/timeout.yaml --id r2 2>/tmp/t.err; [ \$((\$(date +%s) - s)) -lt 15 ] && grep -q 'timed out' /tmp/t.err"
+  check "doctor: a missing host requirement fails before any step runs" x "! veneer doctor /r/.veneer/nix.yaml > /tmp/doc.txt; grep -q 'V5004' /tmp/doc.txt; veneer apply /r/.veneer/nix.yaml --id r3 2>/tmp/d.err; [ \$? = 2 ] && grep -q 'nothing was changed' /tmp/d.err && ! test -e /var/lib/veneer/build.json -a -n \"\$(grep nix /var/lib/veneer/build.json 2>/dev/null)\""
+  check "fetch: writes an OCI layout bundle" x "veneer fetch /p --frozen -o /bundle && test -f /bundle/oci-layout && python3 -c 'import json; i=json.load(open(\"/bundle/index.json\")); assert i[\"manifests\"][0][\"artifactType\"]==\"application/vnd.veneer.bundle.v1+json\"'"
+  docker exec "$a" veneer apply /p --frozen --id off >/dev/null 2>&1
+  local fpa
+  fpa=$(docker exec "$a" python3 -c 'import json; print(json.load(open("/var/lib/veneer/workspaces/off/manifest.json"))["fingerprint"])')
+  rm -rf "$work/bundle" "$work/proj-off"; docker cp "$a:/bundle" "$work/bundle" >/dev/null; docker cp "$a:/p" "$work/proj-off" >/dev/null
+  docker rm -f "$b" >/dev/null 2>&1
+  docker run -d --name "$b" --network none "$img" sleep infinity >/dev/null
+  docker cp "$bin" "$b:/usr/local/bin/veneer" >/dev/null
+  docker cp "$work/bundle" "$b:/bundle" >/dev/null; docker cp "$work/proj-off" "$b:/p" >/dev/null
+  check "offline: apply --from a bundle with no network" sh -c "docker exec $b veneer apply /p --frozen --from /bundle --id off --json | tee $logs/offline.ndjson | grep -q '\"event\":\"run.done\",\"ok\":true' && docker exec $b sh -c 'grep -q jq-1.7 /work/off/jq.txt && test -f /work/off/src/README.md && test -s /var/lib/veneer/data/images/busybox_1.36.tar'"
+  check "offline: the environment fingerprint equals the online run" sh -c "[ -n '$fpa' ] && docker exec $b veneer verify /p --frozen --id off --expect '$fpa'"
+  check "offline: a corrupt bundle blob is rejected" sh -c "docker exec $b sh -c 'f=\$(ls -S /bundle/blobs/sha256/* | head -1); echo x >> \$f; ! veneer apply /p --from /bundle --id off2 2>/tmp/c.err && grep -q corrupt /tmp/c.err'"
+  docker rm -f "$a" "$b" >/dev/null
+}
+
+# ------------------------------------------------------------------ cloudinit
+suite_cloudinit() {
+  echo "▸ cloudinit"
+  local ud="$work/ci"; mkdir -p "$ud"
+  check "cloudinit: bake writes user-data and a NoCloud seed ISO" env VENEER_STATE_DIR="$work/host-state" "$host_bin" bake "$here/vm-fixture" --target cloud-init --embed-veneer --veneer-bin "$bin" -o "$ud/user-data" --seed "$ud/seed.iso"
+  check "cloudinit: user-data passes \`cloud-init schema\`" docker run --rm -v "$ud:/t" ubuntu:24.04 sh -c 'apt-get update -qq >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq cloud-init >/dev/null 2>&1 && cloud-init schema --config-file /t/user-data'
+  check "cloudinit: the seed ISO is labelled cidata and holds both files" docker run --rm -v "$ud:/t" alpine:3.20 sh -c 'apk add --no-cache xorriso >/dev/null 2>&1 && xorriso -indev /t/seed.iso -pvd_info 2>/dev/null | grep -qi "Volume Id.*cidata" && xorriso -indev /t/seed.iso -ls / 2>/dev/null | grep -qi user-data && xorriso -indev /t/seed.iso -ls / 2>/dev/null | grep -qi meta-data'
 }
 
 # ------------------------------------------------------------------ vm

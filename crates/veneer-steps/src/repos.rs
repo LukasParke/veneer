@@ -48,8 +48,12 @@ pub fn fingerprint(dest: &Path, mode: RepoMode) -> String {
 }
 
 fn mirror_path(cx: &Cx<'_>, url: &str) -> PathBuf {
-    cx.dirs
-        .cache
+    mirror_for(cx.dirs, url)
+}
+
+/// The bare mirror veneer keeps for `url`.
+pub fn mirror_for(dirs: &veneer_plan::Dirs, url: &str) -> PathBuf {
+    dirs.cache
         .join("git")
         .join(format!("{}.git", &digest(url.as_bytes())[..16]))
 }

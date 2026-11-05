@@ -325,7 +325,7 @@ pub fn observe(plan: &Plan, dirs: &Dirs, spec_digest: &str) -> Value {
                 "manager": manager,
                 "inputs": digest,
             })),
-            StepKind::Images { refs } | StepKind::ImagesLoad { refs } => {
+            StepKind::Images { refs, .. } | StepKind::ImagesLoad { refs, .. } => {
                 for r in refs {
                     images.insert(r.clone(), image_id(dirs, r));
                 }

@@ -19,8 +19,14 @@ fn plan(ids: &[&str]) -> Plan {
                 id: id.to_string(),
                 group: "g".into(),
                 phase: Phase::Workspace,
-                kind: StepKind::Images { refs: vec![] },
+                kind: StepKind::Images {
+                    refs: vec![],
+                    digests: Default::default(),
+                },
                 hash: format!("h-{id}"),
+                retries: 0,
+                retry_any: false,
+                timeout_ms: None,
             })
             .collect(),
     }
@@ -157,4 +163,110 @@ fn atomic_write_lock_and_logged_process() {
 fn events_redact_secrets() {
     let e = Events::new(false, vec!["s3cr3t".into(), "x".into()]);
     assert_eq!(e.redact("token=s3cr3t x"), "token=******** x");
+}
+
+/// Fails the first `fails` applies with `message`.
+struct Flaky {
+    fails: std::cell::Cell<u32>,
+    message: &'static str,
+    attempts: std::cell::Cell<u32>,
+}
+
+impl Steps for Flaky {
+    fn check(&self, _: &Step, _: &mut Cx<'_>) -> veneer_exec::Result<Check> {
+        Ok(Check::Needed("missing".into()))
+    }
+    fn apply(&self, _: &Step, cx: &mut Cx<'_>) -> veneer_exec::Result<()> {
+        self.attempts.set(self.attempts.get() + 1);
+        if self.fails.get() > 0 {
+            self.fails.set(self.fails.get() - 1);
+            cx.log.line(self.message);
+            return Err(veneer_exec::ExecError::failed("download failed"));
+        }
+        Ok(())
+    }
+    fn verify(&self, _: &Step, _: &mut Cx<'_>) -> veneer_exec::Result<String> {
+        Ok("ok".into())
+    }
+}
+
+fn flaky_run(retries: u32, fails: u32, message: &'static str, retry_any: bool) -> (bool, u32) {
+    let dir = tempfile::tempdir().unwrap();
+    let dirs = Dirs::under(dir.path().to_path_buf());
+    let mut p = plan(&["net"]);
+    p.steps[0].retries = retries;
+    p.steps[0].retry_any = retry_any;
+    let events = Events::new(true, vec![]);
+    let runner = Runner::new(&p, &dirs, &events);
+    let steps: Vec<&Step> = p.steps.iter().collect();
+    let mut j = Journal::load(dir.path().join("j.json")).unwrap();
+    let f = Flaky {
+        fails: fails.into(),
+        message,
+        attempts: 0.into(),
+    };
+    let ok = runner.run(&steps, &mut j, &f).is_ok();
+    (ok, f.attempts.get())
+}
+
+#[test]
+fn transient_failures_retry_with_backoff() {
+    let t = std::time::Instant::now();
+    assert_eq!(
+        flaky_run(4, 2, "curl: (56) Connection reset by peer", false),
+        (true, 3)
+    );
+    assert!(
+        t.elapsed() >= std::time::Duration::from_secs(3),
+        "1s + 2s backoff"
+    );
+    // permanent errors and exhausted budgets stop
+    assert_eq!(
+        flaky_run(4, 2, "sha256 checksum mismatch", false),
+        (false, 1)
+    );
+    assert_eq!(
+        flaky_run(1, 3, "503 Service Unavailable", false),
+        (false, 2)
+    );
+    // hooks with `retries:` retry on anything
+    assert_eq!(flaky_run(2, 1, "exit status 1", true), (true, 2));
+    assert!(veneer_exec::is_transient(
+        "fatal: unable to access: Could not resolve host: github.com"
+    ));
+    assert!(!veneer_exec::is_transient(
+        "error: pathspec 'nope' did not match"
+    ));
+}
+
+#[test]
+fn step_timeout_kills_the_process_group() {
+    let dir = tempfile::tempdir().unwrap();
+    let dirs = Dirs::under(dir.path().to_path_buf());
+    let mut p = plan(&["slow"]);
+    p.steps[0].timeout_ms = Some(300);
+    struct Slow;
+    impl Steps for Slow {
+        fn check(&self, _: &Step, _: &mut Cx<'_>) -> veneer_exec::Result<Check> {
+            Ok(Check::Needed("x".into()))
+        }
+        fn apply(&self, _: &Step, cx: &mut Cx<'_>) -> veneer_exec::Result<()> {
+            run_logged(
+                std::process::Command::new("sh").args(["-c", "sleep 30"]),
+                cx.log,
+            )
+        }
+        fn verify(&self, _: &Step, _: &mut Cx<'_>) -> veneer_exec::Result<String> {
+            Ok("x".into())
+        }
+    }
+    let events = Events::new(true, vec![]);
+    let runner = Runner::new(&p, &dirs, &events);
+    let steps: Vec<&Step> = p.steps.iter().collect();
+    let mut j = Journal::load(dir.path().join("j.json")).unwrap();
+    let t = std::time::Instant::now();
+    let err = runner.run(&steps, &mut j, &Slow).unwrap_err();
+    assert!(err.message.contains("timed out"), "{}", err.message);
+    assert!(t.elapsed() < std::time::Duration::from_secs(10));
+    assert_eq!(j.data.steps["slow"].status, Status::Failed);
 }

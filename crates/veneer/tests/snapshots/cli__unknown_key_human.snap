@@ -5,7 +5,8 @@ expression: text
 V1009
 
   × unknown field `pakages`, expected one of `version`, `base`, `extends`, `use`, `vars`,
-  │ `secrets`, `env`, `packages`, `tools`, `deps`, `images`, `workspace`, `services`, `hooks`
+  │ `secrets`, `env`, `packages`, `tools`, `deps`, `images`, `workspace`, `services`, `hooks`,
+  │ `defaults`
    ╭─[.veneer/veneer.yaml:2:10]
  1 │ version: 1
  2 │ pakages: [git]

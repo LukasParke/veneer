@@ -25,6 +25,15 @@ pub struct LockFile {
     pub version: u32,
     #[serde(default)]
     pub sources: BTreeMap<String, LockEntry>,
+    /// `<tool>@<requested>` → exact version (`veneer lock`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tools: BTreeMap<String, String>,
+    /// image ref → manifest digest.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub images: BTreeMap<String, String>,
+    /// `<url>#<ref>` → commit.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub repos: BTreeMap<String, String>,
 }
 
 /// Fetch context shared across one resolution.
@@ -46,7 +55,7 @@ impl Remote {
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or(LockFile {
                 version: 1,
-                sources: BTreeMap::new(),
+                ..Default::default()
             });
         Self {
             cache,
@@ -223,6 +232,13 @@ fn fetch_https(cache: &Path, url: &str) -> Result<PathBuf, String> {
     let dir = cache.join("sources").join(short(url));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join(name);
+    if std::env::var_os("VENEER_OFFLINE").is_some() {
+        return if path.is_file() {
+            Ok(path)
+        } else {
+            Err(format!("offline and {url} is not cached"))
+        };
+    }
     let mut resp = ureq::get(url)
         .call()
         .map_err(|e| format!("GET {url}: {e}"))?;
@@ -269,7 +285,12 @@ pub fn fetch(remote: &mut Remote, source: &str) -> Result<PathBuf, Diagnostic> {
                 r.reference = d; // pull exactly the pinned manifest
             }
             let dir = crate::oci::cache_dir(&remote.cache, &r);
-            let digest = crate::oci::pull(&r, &dir).map_err(err)?;
+            let offline = std::env::var_os("VENEER_OFFLINE").is_some();
+            let digest = match pinned.as_ref().and_then(|p| p.commit.clone()) {
+                Some(d) if offline && dir.is_dir() => d,
+                _ if offline => return Err(err("offline and not cached".into())),
+                _ => crate::oci::pull(&r, &dir).map_err(err)?,
+            };
             let rel = path.clone().unwrap_or_else(|| {
                 if dir.join(".veneer/veneer.yaml").is_file() {
                     ".veneer/veneer.yaml".into()

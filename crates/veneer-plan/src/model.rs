@@ -74,6 +74,9 @@ pub enum StepKind {
     },
     Images {
         refs: Vec<String>,
+        /// Locked manifest digests by ref (`veneer.lock`).
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        digests: std::collections::BTreeMap<String, String>,
     },
     Hook {
         run: String,
@@ -97,6 +100,8 @@ pub enum StepKind {
     },
     ImagesLoad {
         refs: Vec<String>,
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        digests: std::collections::BTreeMap<String, String>,
     },
     Compose {
         project: String,
@@ -124,6 +129,47 @@ pub struct Step {
     pub kind: StepKind,
     /// blake3 of the step's inputs (hex).
     pub hash: String,
+    /// Retries after a failed apply (see `retry_any`).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub retries: u32,
+    /// Retry on any failure (hooks with `retries:`), not only transient network errors.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retry_any: bool,
+    /// Kill the step's commands after this many milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+/// Versions and digests pinned in `veneer.lock` (standards proposal §5.4.1).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct Pins {
+    /// `<tool>@<requested>` → exact version.
+    #[serde(default)]
+    pub tools: std::collections::BTreeMap<String, String>,
+    /// image ref → manifest digest (`sha256:…`).
+    #[serde(default)]
+    pub images: std::collections::BTreeMap<String, String>,
+    /// `<url>#<ref or HEAD>` → commit.
+    #[serde(default)]
+    pub repos: std::collections::BTreeMap<String, String>,
+}
+
+impl Pins {
+    pub fn is_empty(&self) -> bool {
+        self.tools.is_empty() && self.images.is_empty() && self.repos.is_empty()
+    }
+}
+
+pub fn tool_key(name: &str, requested: &str) -> String {
+    format!("{name}@{requested}")
+}
+
+pub fn repo_key(url: &str, git_ref: Option<&str>) -> String {
+    format!("{url}#{}", git_ref.unwrap_or("HEAD"))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

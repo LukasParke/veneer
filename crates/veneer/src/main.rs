@@ -47,8 +47,12 @@ enum Command {
     Down(run::DownArgs),
     /// Bake the build phase into an OCI image or a microVM rootfs.
     Bake(bake::BakeArgs),
-    /// Pin remote sources in .veneer/veneer.lock.
+    /// Pin remote sources, tool versions, image digests, and repo commits in veneer.lock.
     Lock(run::LockArgs),
+    /// Check that this host has what the spec needs.
+    Doctor(run::DoctorArgs),
+    /// Download everything the spec needs into an offline bundle (OCI layout).
+    Fetch(run::FetchArgs),
     /// Scaffold .veneer/veneer.yaml from existing project files.
     Init(init::InitArgs),
     /// Create sandboxes (containers), stage the spec in each, and print their handles.
@@ -84,6 +88,8 @@ fn main() -> ExitCode {
         Command::Down(args) => run::down(args),
         Command::Bake(args) => bake::run(args),
         Command::Lock(args) => run::lock(args),
+        Command::Doctor(args) => run::doctor(args),
+        Command::Fetch(args) => run::fetch(args),
         Command::Init(args) => init::run(args),
         Command::Internal(cmd) => feature::run(cmd),
         Command::Up(args) => sandbox::up(args),

@@ -36,6 +36,18 @@ pub struct Target {
     /// Re-pin remote sources in veneer.lock instead of enforcing it.
     #[arg(long, hide = true)]
     pub update_lock: bool,
+    /// Fail if a tool, image, or repo is not pinned in veneer.lock.
+    #[arg(long, env = "VENEER_FROZEN")]
+    pub frozen: bool,
+    /// Give up on the whole run after this long (e.g. 20m).
+    #[arg(long, value_name = "DURATION", value_parser = parse_timeout)]
+    pub timeout: Option<std::time::Duration>,
+}
+
+fn parse_timeout(s: &str) -> Result<std::time::Duration, String> {
+    veneer_plan::parse_duration_ms(s)
+        .map(std::time::Duration::from_millis)
+        .ok_or_else(|| format!("`{s}` is not a duration (e.g. 90s, 20m)"))
 }
 
 fn parse_set(s: &str) -> Result<(String, String), String> {
@@ -63,6 +75,12 @@ pub struct ApplyArgs {
     /// Also write the environment manifest here (it is always kept in the state dir).
     #[arg(long, value_name = "FILE")]
     pub manifest: Option<PathBuf>,
+    /// Restore this offline bundle (from `veneer fetch`) first; implies --offline.
+    #[arg(long, value_name = "DIR")]
+    pub from: Option<PathBuf>,
+    /// Forbid network access: veneer and every child process fail fast instead.
+    #[arg(long)]
+    pub offline: bool,
 }
 
 pub struct Loaded {
@@ -72,6 +90,22 @@ pub struct Loaded {
     pub spec: Spec,
     pub tree: veneer_spec::Node,
     pub dirs: Dirs,
+    /// Pins from veneer.lock.
+    pub pins: veneer_plan::Pins,
+}
+
+pub fn lock_path(entry: &std::path::Path) -> PathBuf {
+    entry.with_file_name("veneer.lock")
+}
+
+fn read_lock(entry: &std::path::Path) -> veneer_resolve::remote::LockFile {
+    std::fs::read(lock_path(entry))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or(veneer_resolve::remote::LockFile {
+            version: 1,
+            ..Default::default()
+        })
 }
 
 pub fn fail(code: u8, message: &str, json: bool) -> ExitCode {
@@ -144,7 +178,13 @@ pub fn load(target: &Target, json: bool) -> Result<Loaded, ExitCode> {
     let (Some(spec), Some(tree)) = (resolved.spec, resolved.tree) else {
         return Err(ExitCode::from(2));
     };
+    let lock = read_lock(&entry);
     Ok(Loaded {
+        pins: veneer_plan::Pins {
+            tools: lock.tools,
+            images: lock.images,
+            repos: lock.repos,
+        },
         entry,
         documents,
         spec,
@@ -167,6 +207,9 @@ pub fn make_plan(
         workspace,
         only,
         sets: target.sets.clone(),
+        pins: l.pins.clone(),
+        frozen: target.frozen,
+        no_secrets: false,
     };
     match plan(&l.spec, &l.tree, &l.entry, &l.dirs, &opts) {
         Ok(p) => {
@@ -287,6 +330,24 @@ pub fn execute(
     let partial = only.is_some();
     let plan = make_plan(l, target, build, workspace, only, json)?;
     let events = Events::new(json, plan.secret_values.clone());
+    veneer_exec::set_run_timeout(target.timeout);
+    if !dry_run {
+        let reqs = veneer_steps::doctor::check(&plan);
+        for r in reqs.iter().filter(|r| !r.hard && !r.ok) {
+            events.emit(
+                "warning",
+                None,
+                json!({"code": r.code, "message": format!("{} may need {}", r.step, r.need)}),
+                &format!(
+                    "warning: {}: {} may need {} ({})",
+                    r.code, r.step, r.need, r.hint
+                ),
+            );
+        }
+        if let Some(msg) = veneer_steps::doctor::blocking(&reqs) {
+            return Err(fail(2, &msg, json));
+        }
+    }
     let runner = Runner::new(&plan, dirs, &events);
     events.emit(
         "run.start",
@@ -368,7 +429,47 @@ pub fn execute(
     Ok((applied, manifest))
 }
 
+/// Restores `--from` and switches the process (and its children) to offline mode.
+pub fn go_offline(from: Option<&std::path::Path>, json: bool) -> Result<(), ExitCode> {
+    if let Some(dir) = from {
+        let dirs = Dirs::from_env();
+        let mut log = veneer_exec::Log::create(
+            dirs.state
+                .join("logs")
+                .join(format!("restore-{}.log", std::process::id())),
+        )
+        .map_err(|e| fail(e.exit, &e.message, json))?;
+        match veneer_steps::bundle::restore(dir, &dirs, &mut log) {
+            Ok(s) => {
+                if !json {
+                    eprintln!(
+                        "▸ restored bundle {} (tools: {}, images: {}, repos: {}, sources: {})",
+                        s.digest, s.tools, s.images, s.repos, s.sources
+                    );
+                }
+            }
+            Err(e) => {
+                return Err(fail(
+                    e.exit,
+                    &format!("cannot restore {}: {}", dir.display(), e.message),
+                    json,
+                ));
+            }
+        }
+    }
+    for (k, v) in veneer_steps::bundle::offline_env() {
+        // SAFETY: called before any thread is spawned.
+        unsafe { std::env::set_var(k, v) };
+    }
+    Ok(())
+}
+
 pub fn apply(args: ApplyArgs) -> ExitCode {
+    if (args.offline || args.from.is_some())
+        && let Err(code) = go_offline(args.from.as_deref(), args.json)
+    {
+        return code;
+    }
     let l = match load(&args.target, args.json) {
         Ok(l) => l,
         Err(code) => return code,
@@ -655,23 +756,175 @@ pub fn down(args: DownArgs) -> ExitCode {
 pub struct LockArgs {
     #[command(flatten)]
     pub target: Target,
-    /// Re-pin every remote source to what its ref points at now.
+    /// Re-pin everything to what it resolves to now (default: pin only what is missing).
     #[arg(long)]
     pub update: bool,
 }
 
 pub fn lock(mut args: LockArgs) -> ExitCode {
     args.target.update_lock = args.update;
-    match load(&args.target, false) {
-        Ok(l) => {
-            let lock = l.entry.with_file_name("veneer.lock");
-            if lock.is_file() {
-                eprintln!("✓ {}", lock.display());
-            } else {
-                eprintln!("no remote sources; nothing to lock");
-            }
+    args.target.frozen = false;
+    let l = match load(&args.target, false) {
+        Ok(l) => l,
+        Err(code) => return code,
+    };
+    let opts = PlanOptions {
+        workspace_id: args.target.id.clone(),
+        sets: args.target.sets.clone(),
+        no_secrets: true,
+        ..Default::default()
+    };
+    let plan = match plan(&l.spec, &l.tree, &l.entry, &l.dirs, &opts) {
+        Ok(p) => p.plan,
+        Err(e) => return fail(e.exit, &e.message, false),
+    };
+    let mut log = match veneer_exec::Log::create(
+        l.dirs
+            .state
+            .join("logs")
+            .join(format!("lock-{}.log", std::process::id())),
+    ) {
+        Ok(log) => log,
+        Err(e) => return fail(e.exit, &e.message, false),
+    };
+    let pins = match veneer_steps::lock::resolve(&plan, &l.dirs, &l.pins, args.update, &mut log) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{}", log.tail(20));
+            return fail(e.exit, &format!("cannot lock: {}", e.message), false);
+        }
+    };
+    let mut lock = read_lock(&l.entry);
+    lock.tools = pins.tools;
+    lock.images = pins.images;
+    lock.repos = pins.repos;
+    let path = lock_path(&l.entry);
+    if lock.sources.is_empty()
+        && lock.tools.is_empty()
+        && lock.images.is_empty()
+        && lock.repos.is_empty()
+    {
+        eprintln!("nothing to lock");
+        return ExitCode::SUCCESS;
+    }
+    let mut text = serde_json::to_string_pretty(&lock).expect("lock serializes");
+    text.push('\n');
+    if let Err(e) = std::fs::write(&path, text) {
+        return fail(1, &format!("cannot write {}: {e}", path.display()), false);
+    }
+    eprintln!(
+        "✓ {} ({} sources, {} tools, {} images, {} repos)",
+        path.display(),
+        lock.sources.len(),
+        lock.tools.len(),
+        lock.images.len(),
+        lock.repos.len()
+    );
+    ExitCode::SUCCESS
+}
+
+// ---------------------------------------------------------------- doctor / fetch
+
+#[derive(Debug, clap::Args)]
+pub struct DoctorArgs {
+    #[command(flatten)]
+    pub target: Target,
+}
+
+pub fn doctor(args: DoctorArgs) -> ExitCode {
+    let l = match load(&args.target, false) {
+        Ok(l) => l,
+        Err(code) => return code,
+    };
+    let opts = PlanOptions {
+        workspace_id: args.target.id.clone(),
+        sets: args.target.sets.clone(),
+        no_secrets: true,
+        pins: l.pins.clone(),
+        ..Default::default()
+    };
+    let plan = match plan(&l.spec, &l.tree, &l.entry, &l.dirs, &opts) {
+        Ok(p) => p.plan,
+        Err(e) => return fail(e.exit, &e.message, false),
+    };
+    let reqs = veneer_steps::doctor::check(&plan);
+    if reqs.is_empty() {
+        println!("✓ nothing on this host is required beyond veneer itself");
+    }
+    for r in &reqs {
+        let mark = match (r.ok, r.hard) {
+            (true, _) => "✓",
+            (false, true) => "✗",
+            (false, false) => "!",
+        };
+        println!("{mark} {:<6} {:<28} {}", r.code, r.step, r.need);
+        if !r.ok {
+            println!("         {}", r.hint);
+        }
+    }
+    if veneer_steps::doctor::blocking(&reqs).is_some() {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+#[derive(Debug, clap::Args)]
+pub struct FetchArgs {
+    #[command(flatten)]
+    pub target: Target,
+    /// Output directory (an OCI image layout).
+    #[arg(long, short)]
+    pub output: PathBuf,
+}
+
+pub fn fetch(args: FetchArgs) -> ExitCode {
+    let l = match load(&args.target, false) {
+        Ok(l) => l,
+        Err(code) => return code,
+    };
+    let opts = PlanOptions {
+        workspace_id: args.target.id.clone(),
+        sets: args.target.sets.clone(),
+        no_secrets: true,
+        pins: l.pins.clone(),
+        frozen: args.target.frozen,
+        ..Default::default()
+    };
+    let plan = match plan(&l.spec, &l.tree, &l.entry, &l.dirs, &opts) {
+        Ok(p) => p.plan,
+        Err(e) => return fail(e.exit, &e.message, false),
+    };
+    let mut log = match veneer_exec::Log::create(
+        l.dirs
+            .state
+            .join("logs")
+            .join(format!("fetch-{}.log", std::process::id())),
+    ) {
+        Ok(log) => log,
+        Err(e) => return fail(e.exit, &e.message, false),
+    };
+    eprintln!(
+        "▸ fetching into {} (log: {})",
+        args.output.display(),
+        log.path.display()
+    );
+    match veneer_steps::bundle::fetch(&plan, &l.dirs, &args.output, &mut log) {
+        Ok(s) => {
+            eprintln!(
+                "✓ bundle {} for {} (tools: {}, images: {}, repos: {}, sources: {})",
+                s.digest,
+                veneer_steps::bundle::platform(),
+                s.tools,
+                s.images,
+                s.repos,
+                s.sources
+            );
             ExitCode::SUCCESS
         }
-        Err(code) => code,
+        Err(e) => {
+            eprintln!("{}", log.tail(30));
+            fail(e.exit, &format!("fetch failed: {}", e.message), false)
+        }
     }
 }

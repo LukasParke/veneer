@@ -102,6 +102,10 @@
     "hooks": {
       "description": "Lifecycle hooks.",
       "$ref": "#/$defs/Hooks"
+    },
+    "defaults": {
+      "description": "Retry and timeout defaults for every step.",
+      "$ref": "#/$defs/Defaults"
     }
   },
   "additionalProperties": false,
@@ -472,12 +476,54 @@
             "null"
           ],
           "default": null
+        },
+        "retries": {
+          "description": "Retry the hook this many times after any failure (exponential backoff).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "default": null
+        },
+        "timeout": {
+          "description": "Kill the hook after this long, e.g. `90s`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
         }
       },
       "additionalProperties": false,
       "required": [
         "run"
       ]
+    },
+    "Defaults": {
+      "type": "object",
+      "properties": {
+        "retries": {
+          "description": "Retries for transient network failures in network steps (packages, tools, deps,\nimages, repos, services). Default 4.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "default": null
+        },
+        "timeout": {
+          "description": "Per-step timeout, e.g. `10m`. Default: none.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

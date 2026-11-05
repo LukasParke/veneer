@@ -32,6 +32,11 @@ fn asset_name() -> Result<String> {
 }
 
 fn download(url: &str) -> Result<Vec<u8>> {
+    if crate::bundle::is_offline() {
+        return Err(ExecError::failed(format!(
+            "offline: cannot download {url} (restore a bundle with `--from`)"
+        )));
+    }
     let mut resp = ureq::get(url)
         .call()
         .map_err(|e| ExecError::failed(format!("download {url} failed: {e}")))?;

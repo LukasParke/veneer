@@ -50,6 +50,21 @@ pub struct Spec {
     /// Lifecycle hooks.
     #[serde(default)]
     pub hooks: Hooks,
+    /// Retry and timeout defaults for every step.
+    #[serde(default)]
+    pub defaults: Defaults,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Defaults {
+    /// Retries for transient network failures in network steps (packages, tools, deps,
+    /// images, repos, services). Default 4.
+    #[serde(default)]
+    pub retries: Option<u32>,
+    /// Per-step timeout, e.g. `10m`. Default: none.
+    #[serde(default)]
+    pub timeout: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
@@ -227,6 +242,12 @@ pub struct HookSpec {
     pub creates: Option<String>,
     #[serde(default)]
     pub unless: Option<String>,
+    /// Retry the hook this many times after any failure (exponential backoff).
+    #[serde(default)]
+    pub retries: Option<u32>,
+    /// Kill the hook after this long, e.g. `90s`.
+    #[serde(default)]
+    pub timeout: Option<String>,
 }
 
 /// A semantic rule violation found after successful deserialization.

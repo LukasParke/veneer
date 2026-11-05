@@ -8,10 +8,13 @@ use std::process::Command;
 use veneer_exec::{Check, Cx, ExecError, Result, Steps, run_logged, write_atomic};
 use veneer_plan::{Dirs, Plan, Step, StepKind, adapters};
 
+pub mod bundle;
+pub mod doctor;
+pub mod lock;
 pub mod manifest;
 pub mod mise;
 mod nix;
-mod repos;
+pub mod repos;
 mod services;
 mod util;
 
@@ -134,7 +137,7 @@ pub(crate) fn package_versions(names: &[String]) -> Vec<(String, Option<String>)
         .collect()
 }
 
-fn missing_packages(names: &[String]) -> Result<Vec<String>> {
+pub(crate) fn missing_packages(names: &[String]) -> Result<Vec<String>> {
     let pm = package_manager()?;
     Ok(names
         .iter()
@@ -200,7 +203,7 @@ fn image_present(r: &str) -> bool {
     succeeds(Command::new("docker").args(["image", "inspect", r]))
 }
 
-fn image_tar(dirs: &Dirs, r: &str) -> PathBuf {
+pub fn image_tar(dirs: &Dirs, r: &str) -> PathBuf {
     let name: String = r
         .chars()
         .map(|c| {
@@ -214,10 +217,53 @@ fn image_tar(dirs: &Dirs, r: &str) -> PathBuf {
     dirs.data.join("images").join(format!("{name}.tar"))
 }
 
-fn apply_images(refs: &[String], cx: &mut Cx<'_>) -> Result<()> {
+/// `repo@digest` for a locked image (any tag dropped), or the ref itself.
+pub fn pinned_ref(r: &str, digests: &BTreeMap<String, String>) -> String {
+    match digests.get(r) {
+        Some(d) => {
+            let repo = r.split('@').next().unwrap_or(r);
+            let slash = repo.rfind('/').map(|i| i + 1).unwrap_or(0);
+            let repo = match repo[slash..].find(':') {
+                Some(c) => &repo[..slash + c],
+                None => repo,
+            };
+            format!("{repo}@{d}")
+        }
+        None => r.to_string(),
+    }
+}
+
+/// Loads a saved tarball into the daemon and makes sure it answers to `r`.
+fn docker_load(r: &str, tar: &Path, cx: &mut Cx<'_>) -> Result<()> {
+    run_logged(
+        Command::new("docker").arg("load").arg("-i").arg(tar),
+        cx.log,
+    )?;
+    if !image_present(r)
+        && let Some(id) = manifest::tar_config_digest(tar)
+    {
+        run_logged(Command::new("docker").args(["tag", &id, r]), cx.log)?;
+    }
+    Ok(())
+}
+
+fn apply_images(
+    refs: &[String],
+    digests: &BTreeMap<String, String>,
+    cx: &mut Cx<'_>,
+) -> Result<()> {
     if docker_ready() {
         for r in refs.iter().filter(|r| !image_present(r)) {
-            run_logged(Command::new("docker").args(["pull", r]), cx.log)?;
+            let tar = image_tar(cx.dirs, r);
+            if tar.is_file() {
+                docker_load(r, &tar, cx)?;
+                continue;
+            }
+            let src = pinned_ref(r, digests);
+            run_logged(Command::new("docker").args(["pull", &src]), cx.log)?;
+            if src != *r {
+                run_logged(Command::new("docker").args(["tag", &src, r]), cx.log)?;
+            }
         }
         return Ok(());
     }
@@ -237,7 +283,17 @@ fn apply_images(refs: &[String], cx: &mut Cx<'_>) -> Result<()> {
             "pulling images without a Docker daemon needs a CA bundle: add `ca-certificates` to `packages`",
         ));
     }
-    let bin = mise::ensure_mise(cx.dirs, cx.log)?;
+    crane_save(refs, digests, cx.dirs, cx.log)
+}
+
+/// Saves each image as a docker-loadable tarball with crane (no daemon needed).
+pub fn crane_save(
+    refs: &[String],
+    digests: &BTreeMap<String, String>,
+    dirs: &Dirs,
+    log: &mut veneer_exec::Log,
+) -> Result<()> {
+    let bin = mise::ensure_mise(dirs, log)?;
     let platform = format!(
         "linux/{}",
         if std::env::consts::ARCH == "aarch64" {
@@ -247,14 +303,14 @@ fn apply_images(refs: &[String], cx: &mut Cx<'_>) -> Result<()> {
         }
     );
     for r in refs {
-        let tar = image_tar(cx.dirs, r);
+        let tar = image_tar(dirs, r);
         if tar.is_file() {
             continue;
         }
         let tmp = tar.with_extension("tar.part");
         std::fs::create_dir_all(tar.parent().unwrap())
             .map_err(|e| ExecError::failed(e.to_string()))?;
-        let mut c = mise::mise_cmd(&bin, cx.dirs);
+        let mut c = mise::mise_cmd(&bin, dirs);
         c.args([
             "exec",
             "aqua:google/go-containerregistry@latest",
@@ -263,10 +319,10 @@ fn apply_images(refs: &[String], cx: &mut Cx<'_>) -> Result<()> {
             "pull",
             "--platform",
             &platform,
-            r,
+            &pinned_ref(r, digests),
         ])
         .arg(&tmp);
-        run_logged(&mut c, cx.log)?;
+        run_logged(&mut c, log)?;
         std::fs::rename(&tmp, &tar).map_err(|e| ExecError::failed(e.to_string()))?;
     }
     Ok(())
@@ -390,8 +446,8 @@ impl Steps for StepImpls {
                 Some(m) if !dir.join(m).exists() => Check::Needed(format!("{m} missing")),
                 _ => Check::Unknown,
             },
-            StepKind::Images { refs } => images_check(refs, cx.dirs),
-            StepKind::ImagesLoad { refs } => images_load_check(refs, cx.dirs),
+            StepKind::Images { refs, .. } => images_check(refs, cx.dirs),
+            StepKind::ImagesLoad { refs, .. } => images_load_check(refs, cx.dirs),
             StepKind::Hook {
                 creates,
                 unless,
@@ -450,15 +506,12 @@ impl Steps for StepImpls {
                     cx.log,
                 )
             }
-            StepKind::Images { refs } => apply_images(refs, cx),
-            StepKind::ImagesLoad { refs } => {
+            StepKind::Images { refs, digests } => apply_images(refs, digests, cx),
+            StepKind::ImagesLoad { refs, .. } => {
                 for r in refs.iter().filter(|r| !image_present(r)) {
                     let tar = image_tar(cx.dirs, r);
                     if tar.is_file() {
-                        run_logged(
-                            Command::new("docker").arg("load").arg("-i").arg(&tar),
-                            cx.log,
-                        )?;
+                        docker_load(r, &tar, cx)?;
                     }
                 }
                 Ok(())
@@ -533,11 +586,11 @@ impl Steps for StepImpls {
                 }
                 digest.clone()
             }
-            StepKind::Images { refs } => {
+            StepKind::Images { refs, .. } => {
                 expect(images_check(refs, cx.dirs), "images")?;
                 refs.join(",")
             }
-            StepKind::ImagesLoad { refs } => {
+            StepKind::ImagesLoad { refs, .. } => {
                 expect(images_load_check(refs, cx.dirs), "images")?;
                 refs.join(",")
             }

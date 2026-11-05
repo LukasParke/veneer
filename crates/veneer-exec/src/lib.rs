@@ -67,6 +67,59 @@ pub type Result<T> = std::result::Result<T, ExecError>;
 
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 static CHILD_PGID: AtomicI32 = AtomicI32::new(0);
+thread_local! {
+    /// Unix-epoch milliseconds after which the running command is killed (0: none).
+    static STEP_DEADLINE_MS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Deadline for the whole run (`--timeout`), unix-epoch ms (0: none).
+    static RUN_DEADLINE_MS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Sets the run-wide deadline (`--timeout`).
+pub fn set_run_timeout(timeout: Option<Duration>) {
+    RUN_DEADLINE_MS.with(|d| {
+        d.set(
+            timeout
+                .map(|t| now_ms() + t.as_millis() as u64)
+                .unwrap_or(0),
+        )
+    });
+}
+
+fn set_step_deadline(timeout_ms: Option<u64>) {
+    let step = timeout_ms.map(|t| now_ms() + t).unwrap_or(0);
+    let run = RUN_DEADLINE_MS.with(|d| d.get());
+    let d = match (step, run) {
+        (0, r) => r,
+        (s, 0) => s,
+        (s, r) => s.min(r),
+    };
+    STEP_DEADLINE_MS.with(|c| c.set(d));
+}
+
+fn deadline_passed() -> bool {
+    let d = STEP_DEADLINE_MS.with(|c| c.get());
+    d > 0 && now_ms() > d
+}
+
+thread_local! {
+    static TRACEPARENT: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// W3C `traceparent` of the step currently running (for child processes).
+pub fn current_traceparent() -> Option<String> {
+    TRACEPARENT.with(|t| t.borrow().clone())
+}
+
+pub fn set_current_traceparent(tp: Option<String>) {
+    TRACEPARENT.with(|t| *t.borrow_mut() = tp);
+}
 
 /// Installs SIGINT/SIGTERM handlers that set a flag and forward SIGTERM to the running
 /// child's process group. Idempotent.
@@ -325,6 +378,7 @@ pub fn run_logged(cmd: &mut Command, log: &mut Log) -> Result<()> {
     let pgid = child.id() as i32;
     CHILD_PGID.store(pgid, Ordering::SeqCst);
     let mut interrupted_at: Option<Instant> = None;
+    let mut timed_out_at: Option<Instant> = None;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -340,12 +394,32 @@ pub fn run_logged(cmd: &mut Command, log: &mut Log) -> Result<()> {
                 // SAFETY: kill(2) on our own child's process group.
                 unsafe { libc::kill(-pgid, libc::SIGKILL) };
             }
+        } else if deadline_passed() {
+            match timed_out_at {
+                None => {
+                    timed_out_at = Some(Instant::now());
+                    // SAFETY: kill(2) on our own child's process group.
+                    unsafe { libc::kill(-pgid, libc::SIGTERM) };
+                }
+                Some(at) if at.elapsed() > Duration::from_secs(5) => {
+                    // SAFETY: as above.
+                    unsafe { libc::kill(-pgid, libc::SIGKILL) };
+                }
+                _ => {}
+            }
         }
         std::thread::sleep(Duration::from_millis(20));
     };
     CHILD_PGID.store(0, Ordering::SeqCst);
     if interrupted() {
         return Err(ExecError::interrupted());
+    }
+    if timed_out_at.is_some() {
+        log.line("timed out");
+        return Err(ExecError::failed(format!(
+            "{:?} timed out",
+            cmd.get_program()
+        )));
     }
     if status.success() {
         Ok(())
@@ -546,16 +620,52 @@ impl<'a> Runner<'a> {
                 &format!("▸ {} ({reason})", step.id),
             );
             journal.set(&step.id, Status::Running, &step.hash, "")?;
-            let result = {
-                let mut cx = Cx {
-                    plan: self.plan,
-                    dirs: self.dirs,
-                    log: &mut log,
-                    files: &mut journal.data.files,
+            let mut attempt = 0;
+            let result = loop {
+                set_step_deadline(step.timeout_ms);
+                let r = {
+                    let mut cx = Cx {
+                        plan: self.plan,
+                        dirs: self.dirs,
+                        log: &mut log,
+                        files: &mut journal.data.files,
+                    };
+                    impls
+                        .apply(step, &mut cx)
+                        .and_then(|_| impls.verify(step, &mut cx))
                 };
-                impls
-                    .apply(step, &mut cx)
-                    .and_then(|_| impls.verify(step, &mut cx))
+                set_step_deadline(None);
+                let Err(e) = &r else { break r };
+                let tail = log.tail(40);
+                let retry = e.exit == 3
+                    && attempt < step.retries
+                    && !interrupted()
+                    && (step.retry_any || is_transient(&format!("{}\n{tail}", e.message)));
+                if !retry {
+                    break r;
+                }
+                attempt += 1;
+                let delay = backoff(attempt);
+                self.events.emit(
+                    "step.retry",
+                    Some(step),
+                    serde_json::json!({"attempt": attempt, "of": step.retries, "delay_ms": delay.as_millis() as u64, "error": e.message}),
+                    &format!(
+                        "↻ {} retry {attempt}/{} in {:.1}s: {}",
+                        step.id,
+                        step.retries,
+                        delay.as_secs_f64(),
+                        e.message
+                    ),
+                );
+                log.line(&format!(
+                    "--- retry {attempt} after {}ms",
+                    delay.as_millis()
+                ));
+                let until = Instant::now() + delay;
+                while Instant::now() < until && !interrupted() {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
             };
             match result {
                 Ok(fp) => {
@@ -596,6 +706,59 @@ impl<'a> Runner<'a> {
         }
         Ok(applied)
     }
+}
+
+/// Exponential backoff with jitter: 1s, 2s, 4s, 8s (+ up to 250 ms).
+pub fn backoff(attempt: u32) -> Duration {
+    let base = 1000u64 << (attempt.saturating_sub(1)).min(3);
+    let jitter = (now_ms() ^ (std::process::id() as u64).wrapping_mul(2654435761)) % 250;
+    Duration::from_millis(base + jitter)
+}
+
+/// Whether an error looks like a transient network failure (retry) rather than a permanent
+/// one (checksum mismatch, not found, auth).
+pub fn is_transient(text: &str) -> bool {
+    let t = text.to_ascii_lowercase();
+    const PERMANENT: &[&str] = &[
+        "checksum mismatch",
+        "sha256 mismatch",
+        "does not match",
+        "401 unauthorized",
+        "403 forbidden",
+        "permission denied",
+        "authentication failed",
+    ];
+    const TRANSIENT: &[&str] = &[
+        "connection reset",
+        "connection refused",
+        "connection closed",
+        "timed out",
+        "timeout",
+        "temporary failure",
+        "temporarily unavailable",
+        "could not resolve",
+        "name or service not known",
+        "network is unreachable",
+        "no route to host",
+        "tls handshake",
+        "unexpected eof",
+        "early eof",
+        "remote end hung up",
+        "rpc failed",
+        "too many requests",
+        " 429",
+        " 500 ",
+        " 502",
+        " 503",
+        " 504",
+        "bad gateway",
+        "service unavailable",
+        "gateway timeout",
+        "internal server error",
+        "i/o timeout",
+        "broken pipe",
+    ];
+    !PERMANENT.iter().any(|p| t.contains(p)) && TRANSIENT.iter().any(|p| t.contains(p))
 }
 
 fn log_path(log: &Log) -> PathBuf {

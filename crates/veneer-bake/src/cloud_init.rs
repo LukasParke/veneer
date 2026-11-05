@@ -283,24 +283,29 @@ pub fn seed_iso(user_data: &str, out: &Path, log: &mut Log) -> Result<()> {
             return run_logged(&mut c, log);
         }
     }
-    if have("hdiutil") {
-        let _ = std::fs::remove_file(&out_abs);
-        return run_logged(
-            Command::new("hdiutil")
-                .args([
-                    "makehybrid",
-                    "-iso",
-                    "-joliet",
-                    "-default-volume-name",
-                    "cidata",
-                    "-o",
-                ])
-                .arg(&out_abs)
-                .arg(dir.path()),
-            log,
-        );
+    // Then xorriso in a container, then hdiutil (macOS; ISO9660 names are uppercased).
+    if !have("docker") {
+        if have("hdiutil") {
+            let _ = std::fs::remove_file(&out_abs);
+            return run_logged(
+                Command::new("hdiutil")
+                    .args([
+                        "makehybrid",
+                        "-iso",
+                        "-joliet",
+                        "-default-volume-name",
+                        "cidata",
+                        "-o",
+                    ])
+                    .arg(&out_abs)
+                    .arg(dir.path()),
+                log,
+            );
+        }
+        return Err(ExecError::failed(
+            "a seed ISO needs xorriso, genisoimage, mkisofs, docker, or hdiutil",
+        ));
     }
-    // Fall back to xorriso in a container.
     let parent = out_abs.parent().unwrap_or(Path::new("/"));
     let name = out_abs
         .file_name()
