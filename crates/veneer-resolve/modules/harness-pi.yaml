@@ -1,0 +1,13 @@
+# Built-in module: veneer/harness/pi@1
+# Installs the Pi coding agent through mise (npm backend) and renders `mcp:` into
+# ~/.pi/agent/mcp.json. Override with `with:`:
+#   use: [{ module: veneer/harness/pi@1, with: { pi_version: "1.2.3" } }]
+version: 1
+vars:
+  node_version: "22"
+  pi_version: latest
+tools:
+  node: "{{ vars.node_version }}"
+  "npm:@earendil-works/pi-coding-agent": "{{ vars.pi_version }}"
+harnesses:
+  pi: {}

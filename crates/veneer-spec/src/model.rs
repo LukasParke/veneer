@@ -53,6 +53,40 @@ pub struct Spec {
     /// Retry and timeout defaults for every step.
     #[serde(default)]
     pub defaults: Defaults,
+    /// MCP servers, rendered into each enabled harness's own config file.
+    #[serde(default)]
+    pub mcp: IndexMap<String, McpServer>,
+    /// Agent harnesses to configure: claude-code, codex, pi, omp, opencode (the
+    /// `veneer/harness/*` modules enable theirs).
+    #[serde(default)]
+    pub harnesses: IndexMap<String, Harness>,
+}
+
+/// One MCP server: a stdio `command`, or a remote `url` (Streamable HTTP).
+#[derive(Debug, Clone, PartialEq, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct McpServer {
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: IndexMap<String, String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub headers: IndexMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Harness {
+    /// Home directory whose config files are written (default: `$HOME`), e.g.
+    /// `"{{ workspace.root }}/.home"` to isolate workspaces that share a machine.
+    #[serde(default)]
+    pub home: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Deserialize, JsonSchema)]
@@ -133,6 +167,17 @@ pub enum ToolVersion {
     Str(String),
     Int(i64),
     Float(f64),
+    /// `{ version, ...mise tool options }`, e.g. `allow_builds: ["pkg"]` to run an npm
+    /// package's install scripts.
+    Full(ToolOptions),
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
+pub struct ToolOptions {
+    pub version: Scalar,
+    /// Passed through to mise as tool options.
+    #[serde(flatten)]
+    pub options: IndexMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
@@ -294,6 +339,29 @@ impl Spec {
                     code: codes::SERVICE_KIND,
                     pointer: format!("/services/{}", escape_pointer_token(name)),
                     message: format!("service `{name}` must set exactly one of `image` or `run`"),
+                });
+            }
+        }
+        for (name, m) in &self.mcp {
+            if m.command.is_some() == m.url.is_some() {
+                out.push(Violation {
+                    code: codes::MCP_KIND,
+                    pointer: format!("/mcp/{}", escape_pointer_token(name)),
+                    message: format!(
+                        "MCP server `{name}` must set exactly one of `command` or `url`"
+                    ),
+                });
+            }
+        }
+        for name in self.harnesses.keys() {
+            if !crate::HARNESSES.contains(&name.as_str()) {
+                out.push(Violation {
+                    code: codes::SCHEMA,
+                    pointer: format!("/harnesses/{}", escape_pointer_token(name)),
+                    message: format!(
+                        "unknown harness `{name}` (known: {})",
+                        crate::HARNESSES.join(", ")
+                    ),
                 });
             }
         }

@@ -97,6 +97,7 @@ pub mod codes {
     pub const SPEC_NOT_FOUND: &str = "V1012";
     pub const SECRET_SOURCE: &str = "V1013";
     pub const SERVICE_KIND: &str = "V1014";
+    pub const MCP_KIND: &str = "V1015";
     pub const PHASE: &str = "V2001";
     pub const TEMPLATE_SYNTAX: &str = "V2002";
     pub const TEMPLATE_UNKNOWN_VAR: &str = "V2003";

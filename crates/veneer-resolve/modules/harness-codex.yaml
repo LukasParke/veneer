@@ -7,3 +7,5 @@ vars:
 tools:
   node: "{{ vars.node_version }}"
   "npm:@openai/codex": "{{ vars.codex_version }}"
+harnesses:
+  codex: {}

@@ -336,6 +336,9 @@ pub fn builtin_module(name: &str) -> Option<&'static str> {
     match name {
         "veneer/harness/claude-code@1" => Some(include_str!("../modules/harness-claude-code.yaml")),
         "veneer/harness/codex@1" => Some(include_str!("../modules/harness-codex.yaml")),
+        "veneer/harness/pi@1" => Some(include_str!("../modules/harness-pi.yaml")),
+        "veneer/harness/omp@1" => Some(include_str!("../modules/harness-omp.yaml")),
+        "veneer/harness/opencode@1" => Some(include_str!("../modules/harness-opencode.yaml")),
         _ => None,
     }
 }

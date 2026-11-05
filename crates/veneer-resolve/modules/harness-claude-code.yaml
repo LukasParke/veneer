@@ -7,4 +7,9 @@ vars:
   claude_code_version: latest
 tools:
   node: "{{ vars.node_version }}"
-  "npm:@anthropic-ai/claude-code": "{{ vars.claude_code_version }}"
+  # The package's own postinstall fetches the native binary.
+  "npm:@anthropic-ai/claude-code":
+    version: "{{ vars.claude_code_version }}"
+    allow_builds: ["@anthropic-ai/claude-code"]
+harnesses:
+  claude-code: {}

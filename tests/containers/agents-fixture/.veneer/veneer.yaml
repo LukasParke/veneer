@@ -1,0 +1,26 @@
+# Every built-in harness, one MCP block rendered into each harness's own config.
+version: 1
+base: ubuntu:24.04
+use:
+  - veneer/harness/claude-code@1
+  - veneer/harness/codex@1
+  - veneer/harness/pi@1
+  - veneer/harness/omp@1
+  - veneer/harness/opencode@1
+packages: [ca-certificates, git, curl, unzip]
+secrets:
+  gh: { from: env, var: TEST_API_TOKEN }
+mcp:
+  github:
+    command: github-mcp-server
+    args: [stdio]
+    env: { GITHUB_TOKEN: "{{ secrets.gh }}" }
+  docs:
+    url: https://mcp.example.com/mcp
+    headers: { Authorization: "Bearer {{ secrets.gh }}" }
+workspace:
+  root: "/work/{{ workspace.id }}"
+  repos:
+    - { url: /srv/agents.git, path: repo }
+  files:
+    - { src: AGENTS.md, dest: AGENTS.md }

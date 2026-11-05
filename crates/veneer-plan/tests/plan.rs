@@ -112,7 +112,7 @@ fn builds_ordered_steps_with_rendered_values() {
         k => panic!("{k:?}"),
     }
     match &p.steps[1].kind {
-        StepKind::Tools { tools } => {
+        StepKind::Tools { tools, .. } => {
             assert_eq!(tools["node"], "22.11.0");
             assert_eq!(tools["aqua:BurntSushi/ripgrep"], "14.1.1");
         }
@@ -210,7 +210,7 @@ fn phase_filter_only_and_sets() {
     .unwrap()
     .plan;
     match &set.steps[0].kind {
-        StepKind::Tools { tools } => assert_eq!(tools["aqua:BurntSushi/ripgrep"], "15.0.0"),
+        StepKind::Tools { tools, .. } => assert_eq!(tools["aqua:BurntSushi/ripgrep"], "15.0.0"),
         k => panic!("{k:?}"),
     }
 }

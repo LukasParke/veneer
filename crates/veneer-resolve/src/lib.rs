@@ -6,6 +6,7 @@ use suspect_ref::WorkspaceBuilder;
 use veneer_spec::{Diagnostic, Node, Spec, codes, from_node, has_errors, sort_diagnostics};
 
 pub mod devcontainer;
+pub mod devfile;
 pub mod discover;
 pub mod extends;
 pub mod load;

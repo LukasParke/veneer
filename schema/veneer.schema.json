@@ -106,6 +106,20 @@
     "defaults": {
       "description": "Retry and timeout defaults for every step.",
       "$ref": "#/$defs/Defaults"
+    },
+    "mcp": {
+      "description": "MCP servers, rendered into each enabled harness's own config file.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/McpServer"
+      }
+    },
+    "harnesses": {
+      "description": "Agent harnesses to configure: claude-code, codex, pi, omp, opencode (the\n`veneer/harness/*` modules enable theirs).",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Harness"
+      }
     }
   },
   "additionalProperties": false,
@@ -236,8 +250,24 @@
         {
           "type": "number",
           "format": "double"
+        },
+        {
+          "description": "`{ version, ...mise tool options }`, e.g. `allow_builds: [\"pkg\"]` to run an npm\npackage's install scripts.",
+          "$ref": "#/$defs/ToolOptions"
         }
       ]
+    },
+    "ToolOptions": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "$ref": "#/$defs/Scalar"
+        }
+      },
+      "required": [
+        "version"
+      ],
+      "additionalProperties": true
     },
     "Dep": {
       "type": "object",
@@ -516,6 +546,69 @@
         },
         "timeout": {
           "description": "Per-step timeout, e.g. `10m`. Default: none.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "McpServer": {
+      "description": "One MCP server: a stdio `command`, or a remote `url` (Streamable HTTP).",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        }
+      },
+      "additionalProperties": false
+    },
+    "Harness": {
+      "type": "object",
+      "properties": {
+        "home": {
+          "description": "Home directory whose config files are written (default: `$HOME`), e.g.\n`\"{{ workspace.root }}/.home\"` to isolate workspaces that share a machine.",
           "type": [
             "string",
             "null"

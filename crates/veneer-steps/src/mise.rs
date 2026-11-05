@@ -118,11 +118,21 @@ pub fn mise_cmd(bin: &PathBuf, dirs: &Dirs) -> Command {
     c
 }
 
-pub fn render_config(tools: &IndexMap<String, String>) -> String {
+pub fn render_config(
+    tools: &IndexMap<String, String>,
+    options: &IndexMap<String, serde_json::Value>,
+) -> String {
     let mut table = toml::Table::new();
     let mut t = toml::Table::new();
     for (k, v) in tools {
-        t.insert(k.clone(), toml::Value::String(v.clone()));
+        let value = match options.get(k).and_then(|o| toml::Table::try_from(o).ok()) {
+            Some(mut opts) => {
+                opts.insert("version".into(), toml::Value::String(v.clone()));
+                toml::Value::Table(opts)
+            }
+            None => toml::Value::String(v.clone()),
+        };
+        t.insert(k.clone(), value);
     }
     table.insert("tools".into(), toml::Value::Table(t));
     toml::to_string(&table).expect("toml serializes")
@@ -151,14 +161,18 @@ fn missing_tools(
     )
 }
 
-pub fn check(dirs: &Dirs, tools: &IndexMap<String, String>) -> Check {
+pub fn check(
+    dirs: &Dirs,
+    tools: &IndexMap<String, String>,
+    options: &IndexMap<String, serde_json::Value>,
+) -> Check {
     let bin = std::env::var_os("VENEER_MISE_BIN")
         .map(PathBuf::from)
         .unwrap_or_else(|| dirs.mise_bin());
     if !bin.is_file() {
         return Check::Needed("mise is not installed".into());
     }
-    let desired = render_config(tools);
+    let desired = render_config(tools, options);
     if std::fs::read_to_string(config_path(dirs)).ok().as_deref() != Some(desired.as_str()) {
         return Check::Needed("tool versions changed".into());
     }
@@ -169,9 +183,14 @@ pub fn check(dirs: &Dirs, tools: &IndexMap<String, String>) -> Check {
     }
 }
 
-pub fn apply(dirs: &Dirs, tools: &IndexMap<String, String>, log: &mut Log) -> Result<()> {
+pub fn apply(
+    dirs: &Dirs,
+    tools: &IndexMap<String, String>,
+    options: &IndexMap<String, serde_json::Value>,
+    log: &mut Log,
+) -> Result<()> {
     let bin = ensure_mise(dirs, log)?;
-    write_atomic(&config_path(dirs), render_config(tools).as_bytes())
+    write_atomic(&config_path(dirs), render_config(tools, options).as_bytes())
         .map_err(|e| ExecError::failed(format!("cannot write mise config: {e}")))?;
     run_logged(mise_cmd(&bin, dirs).arg("install"), log)
 }

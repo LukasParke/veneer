@@ -168,9 +168,9 @@ pub fn fetch(plan: &Plan, dirs: &Dirs, out: &Path, log: &mut Log) -> Result<Summ
     let mut sum = Summary::default();
     for step in &plan.steps {
         match &step.kind {
-            StepKind::Tools { tools } => {
-                if crate::mise::check(dirs, tools) != veneer_exec::Check::Satisfied {
-                    crate::mise::apply(dirs, tools, log)?;
+            StepKind::Tools { tools, options } => {
+                if crate::mise::check(dirs, tools, options) != veneer_exec::Check::Satisfied {
+                    crate::mise::apply(dirs, tools, options, log)?;
                 }
                 let t = work.path().join("tools.tar");
                 if tar_paths(

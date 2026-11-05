@@ -305,7 +305,7 @@ pub fn observe(plan: &Plan, dirs: &Dirs, spec_digest: &str) -> Value {
                     packages.push(json!({"name": name, "version": version}));
                 }
             }
-            StepKind::Tools { tools: t } => {
+            StepKind::Tools { tools: t, .. } => {
                 for (name, requested) in t {
                     tools.push(json!({
                         "name": name,
@@ -376,6 +376,17 @@ pub fn observe(plan: &Plan, dirs: &Dirs, spec_digest: &str) -> Value {
                 }
                 services.push(json!({"name": "compose", "kind": "compose", "inputs": digests}));
             }
+            StepKind::ConfigMerge {
+                dest, path, value, ..
+            } => files.push(json!({
+                "path": n.apply(&dest.display().to_string()),
+                "key": path.join("."),
+                "sha256": sha256_hex(n.apply(&value.to_string()).as_bytes()),
+            })),
+            StepKind::Symlink { link, target } => files.push(json!({
+                "path": n.apply(&rel(root, link)),
+                "link": std::fs::read_link(link).ok().map(|_| target.clone()),
+            })),
             StepKind::Native { name, run, .. } => {
                 services.push(json!({
                     "name": name,

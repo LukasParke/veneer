@@ -71,7 +71,7 @@ pub fn resolve(
     let mut mise_bin = None;
     for step in &plan.steps {
         match &step.kind {
-            StepKind::Tools { tools } => {
+            StepKind::Tools { tools, .. } => {
                 for (name, requested) in tools {
                     let key = tool_key(name, requested);
                     if let Some(v) = existing.tools.get(&key).filter(|_| !update) {

@@ -9,6 +9,7 @@ use veneer_exec::{Check, Cx, ExecError, Result, Steps, run_logged, write_atomic}
 use veneer_plan::{Dirs, Plan, Step, StepKind, adapters};
 
 pub mod bundle;
+mod config;
 pub mod doctor;
 pub mod lock;
 pub mod manifest;
@@ -444,7 +445,7 @@ impl Steps for StepImpls {
                     Check::Needed(format!("missing packages: {}", missing.join(", ")))
                 }
             }
-            StepKind::Tools { tools } => mise::check(cx.dirs, tools),
+            StepKind::Tools { tools, options } => mise::check(cx.dirs, tools, options),
             StepKind::Nix { refs } => nix::check(cx.dirs, refs),
             StepKind::Deps { dir, manager, .. } => match adapters::install_marker(*manager) {
                 Some(m) if !dir.join(m).exists() => Check::Needed(format!("{m} missing")),
@@ -488,13 +489,21 @@ impl Steps for StepImpls {
             StepKind::Repo { dest, mode, .. } => repos::check(dest, *mode),
             StepKind::Compose { .. } => services::compose_check(step, cx),
             StepKind::Native { .. } => services::native_check(step, cx),
+            StepKind::ConfigMerge {
+                dest,
+                format,
+                path,
+                value,
+                mode,
+            } => config::merge_check(dest, *format, path, value, *mode),
+            StepKind::Symlink { link, target } => config::link_check(link, target),
         })
     }
 
     fn apply(&self, step: &Step, cx: &mut Cx<'_>) -> Result<()> {
         match &step.kind {
             StepKind::Packages { names } => apply_packages(names, cx),
-            StepKind::Tools { tools } => mise::apply(cx.dirs, tools, cx.log),
+            StepKind::Tools { tools, options } => mise::apply(cx.dirs, tools, options, cx.log),
             StepKind::Nix { refs } => nix::apply(cx.dirs, refs, cx.log),
             StepKind::Deps {
                 dir,
@@ -554,6 +563,14 @@ impl Steps for StepImpls {
             } => repos::apply(url, git_ref.as_deref(), dest, *mode, cx),
             StepKind::Compose { .. } => services::compose_apply(step, cx),
             StepKind::Native { .. } => services::native_apply(step, cx),
+            StepKind::ConfigMerge {
+                dest,
+                format,
+                path,
+                value,
+                mode,
+            } => config::merge_apply(dest, *format, path, value, *mode),
+            StepKind::Symlink { link, target } => config::link_apply(link, target),
         }
     }
 
@@ -575,7 +592,7 @@ impl Steps for StepImpls {
                 }
                 names.join(",")
             }
-            StepKind::Tools { tools } => mise::verify(cx.dirs, tools)?,
+            StepKind::Tools { tools, .. } => mise::verify(cx.dirs, tools)?,
             StepKind::Nix { refs } => nix::verify(cx.dirs, refs)?,
             StepKind::Deps {
                 dir,
@@ -634,6 +651,23 @@ impl Steps for StepImpls {
             StepKind::Native { .. } => {
                 expect(services::native_check(step, cx), "service")?;
                 "running".into()
+            }
+            StepKind::ConfigMerge {
+                dest,
+                format,
+                path,
+                value,
+                mode,
+            } => {
+                expect(
+                    config::merge_check(dest, *format, path, value, *mode),
+                    "config",
+                )?;
+                digest(value.to_string().as_bytes())
+            }
+            StepKind::Symlink { link, target } => {
+                expect(config::link_check(link, target), "link")?;
+                format!("{}->{target}", link.display())
             }
         })
     }

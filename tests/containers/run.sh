@@ -24,6 +24,8 @@
 #            Indexed Job of 3 workspaces with a native-sidecar service and a Secret
 #   otel     OTLP/HTTP traces into an OpenTelemetry Collector: span tree, TRACEPARENT parenting
 #            and propagation into hooks, secret redaction
+#   agents   all five harness modules (claude-code, codex, pi, omp, opencode): installs, one
+#            `mcp:` block in each harness's own config, AGENTS.md links; plus a Devfile import
 #   supply   OCI labels + fingerprint label, SBOMs (CycloneDX validated) and SLSA provenance as
 #            OCI referrers, and cosign sign/attest + verify against a local registry
 #   vm       Firecracker boot + memory snapshot + 2 restores, and the bootable disk under QEMU/KVM.
@@ -37,7 +39,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/../.." && pwd)"
 bin="$repo/target/linux/release/veneer"
 host_bin="${HOST_VENEER:-$repo/target/debug/veneer}"
-SUITES="${SUITES:-distros bake compose install devcontainer oci nix sandbox resilience cloudinit supply vmformats k8s otel vm}"
+SUITES="${SUITES:-distros bake compose install devcontainer oci nix sandbox resilience cloudinit supply vmformats k8s otel agents vm}"
 DISTROS="${DISTROS:-ubuntu:24.04 debian:12 alpine:3.20 fedora:41}"
 TOKEN="tok-s3cret-value"
 
@@ -394,6 +396,33 @@ assert any(a['key']=='veneer.step.action' for a in steps[0]['attributes'])
   check "otel: an unreachable collector never fails the run" sh -c "docker exec -e OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:9 $name veneer apply /p --id o2 --json | grep -q '\"ok\":true'"
   docker rm -f "$name" "$col" >/dev/null
   docker network rm "$net" >/dev/null 2>&1
+}
+
+# ------------------------------------------------------------------ agents
+suite_agents() {
+  echo "▸ agents"
+  local name="veneer-ct-agents"
+  git init -q -b main "$work/agents-src"
+  printf '# repo instructions\n' > "$work/agents-src/AGENTS.md"
+  git -C "$work/agents-src" add . && git -C "$work/agents-src" -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -qm init
+  git clone -q --bare "$work/agents-src" "$work/agents.git"
+  start "$name" ubuntu:24.04 -v "$work/agents.git:/srv/agents.git:ro"
+  docker cp "$here/agents-fixture" "$name:/a" >/dev/null
+  x() { docker exec "$name" sh -c "$*"; }
+  local E="veneer exec /a --id a1 --"
+  check "agents: apply installs every harness and renders MCP config" sh -c "docker exec $name veneer apply /a --id a1 --json > $logs/agents.ndjson; grep -q '\"event\":\"run.done\",\"ok\":true' $logs/agents.ndjson"
+  check "agents: all five CLIs run" x "$E claude --version && $E codex --version && $E pi --version && $E omp --version && $E opencode --version"
+  check "agents: claude-code + codex get literal values in 0600 files" x "test \$(stat -c %a /root/.claude.json) = 600 && test \$(stat -c %a /root/.codex/config.toml) = 600 && grep -q '$TOKEN' /root/.claude.json && grep -q '\[mcp_servers.github\]' /root/.codex/config.toml"
+  check "agents: pi, omp, opencode reference env vars, never the secret" x "! grep -q '$TOKEN' /root/.pi/agent/mcp.json /root/.omp/agent/mcp.json /root/.config/opencode/opencode.json && grep -q '\${VENEER_MCP_GITHUB_ENV_GITHUB_TOKEN}' /root/.pi/agent/mcp.json && grep -q '\${VENEER_MCP_DOCS_HEADER_AUTHORIZATION}' /root/.omp/agent/mcp.json && grep -q '{env:VENEER_MCP_GITHUB_ENV_GITHUB_TOKEN}' /root/.config/opencode/opencode.json && $E sh -c 'test \"\$VENEER_MCP_GITHUB_ENV_GITHUB_TOKEN\" = $TOKEN'"
+  check "agents: claude mcp list sees both servers" sh -c "docker exec $name $E claude mcp list > $logs/claude-mcp.txt 2>&1; grep -q github $logs/claude-mcp.txt && grep -q docs $logs/claude-mcp.txt"
+  check "agents: codex mcp list sees both servers" sh -c "docker exec $name $E codex mcp list > $logs/codex-mcp.txt 2>&1; grep -q github $logs/codex-mcp.txt && grep -q docs $logs/codex-mcp.txt"
+  check "agents: opencode mcp list sees both servers" sh -c "docker exec $name $E sh -c 'cd /work/a1 && timeout 60 opencode mcp list' > $logs/opencode-mcp.txt 2>&1; grep -q github $logs/opencode-mcp.txt && grep -q docs $logs/opencode-mcp.txt"
+  check "agents: opencode.json validates against https://opencode.ai/config.json" sh -c "docker exec $name $E sh -c 'cd /tmp && curl -fsSL -o s.json https://opencode.ai/config.json && (npx -y -p ajv-cli@5 -p ajv-formats@3 ajv validate --spec=draft2020 --strict=false -c ajv-formats -s s.json -d /root/.config/opencode/opencode.json || npx -y -p ajv-cli@5 -p ajv-formats@3 ajv validate --strict=false -c ajv-formats -s s.json -d /root/.config/opencode/opencode.json)' > $logs/opencode-schema.txt 2>&1"
+  check "agents: CLAUDE.md links to AGENTS.md (workspace + repo), repo status stays clean" x "test \$(readlink /work/a1/CLAUDE.md) = AGENTS.md && test \$(readlink /work/a1/repo/CLAUDE.md) = AGENTS.md && test -z \"\$(git -C /work/a1/repo status --porcelain)\""
+  check "agents: second apply is a no-op" sh -c "docker exec $name veneer apply /a --id a1 --json | grep -q '\"applied\":0'"
+  docker cp "$here/devfile-import" "$name:/d" >/dev/null
+  check "devfile: extends a devfile.yaml (project, env, build + postStart commands)" x "veneer apply /d --id d1 >/dev/null 2>&1 && test -f /work/d1/web/README.md && grep -q 1 /work/d1/web/lines.txt && grep -q devfile-ok /work/d1/greet.txt && veneer env /d --id d1 --format dotenv | grep -q 'APP_HOME=/work/d1/web'"
+  docker rm -f "$name" >/dev/null
 }
 
 # ------------------------------------------------------------------ supply

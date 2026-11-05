@@ -14,12 +14,15 @@ use veneer_spec::{Hook, Node, Package, Scalar, SecretSource, ServiceEntry, Spec,
 
 pub mod adapters;
 mod dirs;
+pub mod harness;
 mod model;
 mod render;
 
 pub use dirs::{Dirs, is_root};
 pub use model::*;
 pub use render::{Renderer, is_template};
+
+pub const HARNESS_NAMES: &[&str] = veneer_spec::HARNESSES;
 
 /// Exit status class for a planning failure (spec §5.4).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,6 +166,7 @@ fn tool_version(v: &ToolVersion) -> String {
         ToolVersion::Str(s) => s.clone(),
         ToolVersion::Int(i) => i.to_string(),
         ToolVersion::Float(f) => f.to_string(),
+        ToolVersion::Full(o) => scalar_string(&o.version),
     }
 }
 
@@ -436,6 +440,7 @@ pub fn plan(
 
         // tools
         let mut tools = IndexMap::new();
+        let mut tool_options: IndexMap<String, serde_json::Value> = IndexMap::new();
         let tools_wanted = want("tools", "tools") || want("nix", "nix");
         for (name, v) in spec.tools.iter().filter(|_| tools_wanted) {
             if name == "from" {
@@ -447,6 +452,11 @@ pub fn plan(
         for (name, v) in spec.tools.iter().filter(|_| tools_wanted) {
             if name != "from" {
                 tools.insert(name.clone(), rs(&tool_version(v))?);
+                if let ToolVersion::Full(o) = v
+                    && !o.options.is_empty()
+                {
+                    tool_options.insert(name.clone(), serde_json::to_value(&o.options).unwrap());
+                }
             }
         }
         // `nix:<attr>` tools install through Nix instead of mise. The value is `latest`
@@ -489,7 +499,10 @@ pub fn plan(
                 "tools",
                 "tools",
                 Phase::Build,
-                StepKind::Tools { tools },
+                StepKind::Tools {
+                    tools,
+                    options: tool_options,
+                },
                 &[],
             ));
         }
@@ -590,6 +603,42 @@ pub fn plan(
         env.insert("VENEER_WORKSPACE_ID".into(), id.clone());
         env.insert("VENEER_WORKSPACE_ROOT".into(), root.display().to_string());
 
+        // Harness MCP config: rendered now, so secret-bearing values can join the env.
+        let mut harness_homes = IndexMap::new();
+        for (h, ho) in &spec.harnesses {
+            let home = match &ho.home {
+                Some(t) => PathBuf::from(rs(t)?),
+                None => PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/root".into())),
+            };
+            harness_homes.insert(h.clone(), home);
+        }
+        let mut servers = IndexMap::new();
+        for (name, m) in &spec.mcp {
+            let rmap =
+                |m: &IndexMap<String, String>| -> Result<IndexMap<String, String>, PlanError> {
+                    m.iter().map(|(k, v)| Ok((k.clone(), rs(v)?))).collect()
+                };
+            servers.insert(
+                name.clone(),
+                harness::Server {
+                    command: m.command.as_deref().map(rs).transpose()?,
+                    args: m.args.iter().map(|a| rs(a)).collect::<Result<_, _>>()?,
+                    env: rmap(&m.env)?,
+                    cwd: m.cwd.as_deref().map(rs).transpose()?,
+                    url: m.url.as_deref().map(rs).transpose()?,
+                    headers: rmap(&m.headers)?,
+                },
+            );
+        }
+        let codex_home = std::env::var("CODEX_HOME").ok();
+        let (harness_steps, mcp_exports) = harness::steps(
+            &harness_homes,
+            &servers,
+            &secret_values,
+            codex_home.as_deref(),
+        );
+        env.extend(mcp_exports);
+
         let env_text: String = env.iter().map(|(k, v)| format!("{k}={v}\n")).collect();
         let env_file = dirs.workspace_state(&id).join("env");
         steps.push(step(
@@ -670,6 +719,41 @@ pub fn plan(
                         dest: root.join(&dest_rel),
                         content,
                         mode,
+                    },
+                    &[],
+                ));
+            }
+        }
+
+        for (sid, kind) in harness_steps {
+            steps.push(step(sid, "workspace", Phase::Workspace, kind, &[]));
+        }
+        if spec.harnesses.contains_key("claude-code") {
+            // One instruction file for every harness: Claude Code reads CLAUDE.md.
+            let mut dirs_with_agents: Vec<PathBuf> = vec![root.clone()];
+            for s in &steps {
+                match &s.kind {
+                    StepKind::Repo { dest, .. } => dirs_with_agents.push(dest.clone()),
+                    StepKind::File { dest, .. }
+                        if dest.file_name().is_some_and(|n| n == "AGENTS.md") =>
+                    {
+                        if let Some(d) = dest.parent() {
+                            dirs_with_agents.push(d.to_path_buf());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            dirs_with_agents.dedup();
+            for d in dirs_with_agents {
+                let link = d.join("CLAUDE.md");
+                steps.push(step(
+                    format!("agents:{}", link.display()),
+                    "workspace",
+                    Phase::Workspace,
+                    StepKind::Symlink {
+                        link,
+                        target: "AGENTS.md".into(),
                     },
                     &[],
                 ));

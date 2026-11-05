@@ -52,7 +52,7 @@ fn locate_source(
                 loader.diagnostics.push(
                     Diagnostic::error(codes::NOT_FOUND, format!("unknown built-in module `{raw}`"))
                         .at(item.span.clone())
-                        .note("built-in modules: veneer/harness/claude-code@1, veneer/harness/codex@1"),
+                        .note("built-in modules: veneer/harness/{claude-code,codex,pi,omp,opencode}@1"),
                 );
                 None
             }
@@ -198,6 +198,14 @@ pub fn load_layered(
                     merge(&mut acc, l, &[]);
                 }
                 Err(d) => loader.diagnostics.push(d.at(item.span.clone())),
+            }
+            continue;
+        }
+        if crate::devfile::is_devfile(&target.to_string_lossy()) {
+            if let Some(doc) = loader.load_file(&target) {
+                let (l, warnings) = crate::devfile::to_node(&doc);
+                loader.diagnostics.extend(warnings);
+                merge(&mut acc, l, &[]);
             }
             continue;
         }

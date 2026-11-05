@@ -44,6 +44,13 @@ pub enum RepoMode {
     Copy,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConfigFormat {
+    Json,
+    Toml,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Healthcheck {
     pub cmd: Option<String>,
@@ -60,6 +67,9 @@ pub enum StepKind {
     },
     Tools {
         tools: IndexMap<String, String>,
+        /// mise tool options by tool (e.g. `allow_builds`).
+        #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+        options: IndexMap<String, serde_json::Value>,
     },
     /// Flake references installed into veneer's own Nix profile.
     Nix {
@@ -107,6 +117,20 @@ pub enum StepKind {
         project: String,
         files: Vec<PathBuf>,
         generated: Option<String>,
+    },
+    /// Sets one key of a JSON or TOML config file (other keys are kept).
+    ConfigMerge {
+        dest: PathBuf,
+        format: ConfigFormat,
+        path: Vec<String>,
+        value: serde_json::Value,
+        mode: Option<u32>,
+    },
+    /// `link → target` (relative), only when `target` exists next to it and `link` does not.
+    /// Inside a git checkout the link is added to `.git/info/exclude`.
+    Symlink {
+        link: PathBuf,
+        target: String,
     },
     Native {
         name: String,
