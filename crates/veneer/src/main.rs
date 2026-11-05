@@ -33,6 +33,8 @@ enum Command {
     Schema,
     /// Stage the environment: run the build and/or workspace phase.
     Apply(run::ApplyArgs),
+    /// Re-observe a workspace and compare it with its manifest or an expected fingerprint.
+    Verify(run::VerifyArgs),
     /// Show which steps would run and why.
     Diff(run::ApplyArgs),
     /// Run a command with the workspace environment and tools on PATH.
@@ -75,6 +77,7 @@ fn main() -> ExitCode {
             args.dry_run = true;
             run::apply(args)
         }
+        Command::Verify(args) => run::verify(args),
         Command::Exec(args) => run::exec(args),
         Command::Env(args) => run::env(args),
         Command::Entrypoint(args) => run::entrypoint(args),

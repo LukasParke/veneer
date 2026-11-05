@@ -103,6 +103,11 @@ fn read_pid(dirs: &Dirs, id: &str, name: &str) -> Option<i32> {
         .ok()
 }
 
+/// Whether the native service `name` of this workspace has a live process.
+pub fn native_running(dirs: &Dirs, plan: &veneer_plan::Plan, name: &str) -> bool {
+    read_pid(dirs, &plan.workspace_id, name).is_some_and(pid_alive)
+}
+
 fn http_ok(url: &str) -> bool {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(2)))

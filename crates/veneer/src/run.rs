@@ -60,6 +60,9 @@ pub struct ApplyArgs {
     /// NDJSON events on stdout.
     #[arg(long)]
     pub json: bool,
+    /// Also write the environment manifest here (it is always kept in the state dir).
+    #[arg(long, value_name = "FILE")]
+    pub manifest: Option<PathBuf>,
 }
 
 pub struct Loaded {
@@ -198,7 +201,69 @@ fn phase_steps(plan: &Plan, phase: Phase) -> Vec<&Step> {
     plan.steps.iter().filter(|s| s.phase == phase).collect()
 }
 
-/// Runs (or diffs) the selected phases. Returns the number of applied steps.
+/// sha256 of the canonical resolved spec (templates unrendered, so it is workspace-independent).
+pub fn spec_digest(l: &Loaded) -> String {
+    format!(
+        "sha256:{}",
+        veneer_steps::manifest::sha256_hex(
+            veneer_steps::manifest::jcs(&l.tree.to_json()).as_bytes()
+        )
+    )
+}
+
+pub fn workspace_manifest_path(dirs: &Dirs, id: &str) -> PathBuf {
+    dirs.workspace_state(id).join("manifest.json")
+}
+
+pub fn build_manifest_path(dirs: &Dirs) -> PathBuf {
+    dirs.state.join("build-manifest.json")
+}
+
+/// Observes and stores the manifest after a successful run. Workspace runs observe both
+/// phases (the build half is re-planned without secrets when only the workspace ran).
+fn record_manifest(
+    l: &Loaded,
+    target: &Target,
+    plan: &Plan,
+    build: bool,
+    workspace: bool,
+    json: bool,
+) -> Option<serde_json::Value> {
+    let full;
+    let observed_plan = if workspace && !build {
+        let mut b = make_plan(l, target, true, false, None, json).ok()?;
+        b.steps.extend(plan.steps.iter().cloned());
+        b.env = plan.env.clone();
+        b.secret_values = plan.secret_values.clone();
+        b.workspace_root = plan.workspace_root.clone();
+        full = b;
+        &full
+    } else {
+        plan
+    };
+    let m = veneer_steps::manifest::observe(observed_plan, &l.dirs, &spec_digest(l));
+    let path = if workspace {
+        workspace_manifest_path(&l.dirs, &target.id)
+    } else {
+        build_manifest_path(&l.dirs)
+    };
+    let bytes = serde_json::to_vec_pretty(&m).ok()?;
+    veneer_exec::write_atomic(&path, &bytes).ok()?;
+    Some(m)
+}
+
+/// Touches `$VENEER_READY_FILE` (readiness probes, cloud-init, microVM inits).
+fn mark_ready() {
+    if let Some(p) = std::env::var_os("VENEER_READY_FILE") {
+        let p = PathBuf::from(p);
+        if let Some(d) = p.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        let _ = std::fs::write(&p, b"ready\n");
+    }
+}
+
+/// Runs (or diffs) the selected phases. Returns the number of applied steps and the manifest.
 pub fn execute(
     l: &Loaded,
     target: &Target,
@@ -206,7 +271,7 @@ pub fn execute(
     only: Option<String>,
     dry_run: bool,
     json: bool,
-) -> Result<usize, ExitCode> {
+) -> Result<(usize, Option<serde_json::Value>), ExitCode> {
     veneer_exec::install_signal_handlers();
     let build = phase != PhaseArg::Workspace;
     let workspace = phase != PhaseArg::Build;
@@ -219,6 +284,7 @@ pub fn execute(
     } else {
         None
     };
+    let partial = only.is_some();
     let plan = make_plan(l, target, build, workspace, only, json)?;
     let events = Events::new(json, plan.secret_values.clone());
     let runner = Runner::new(&plan, dirs, &events);
@@ -278,11 +344,19 @@ pub fn execute(
             journal.save().map_err(|e| exec_error(e, json))?;
         }
     }
+    let mut manifest = None;
     if !dry_run {
+        if !partial {
+            manifest = record_manifest(l, target, &plan, build, workspace, json);
+        }
+        if workspace {
+            mark_ready();
+        }
+        let fp = manifest.as_ref().map(|m| m["fingerprint"].clone());
         events.emit(
             "run.done",
             None,
-            json!({"ok": true, "exit": 0, "applied": applied, "root": plan.workspace_root}),
+            json!({"ok": true, "exit": 0, "applied": applied, "root": plan.workspace_root, "fingerprint": fp}),
             &format!(
                 "ready: {} ({} applied) at {}",
                 plan.workspace_id,
@@ -291,7 +365,7 @@ pub fn execute(
             ),
         );
     }
-    Ok(applied)
+    Ok((applied, manifest))
 }
 
 pub fn apply(args: ApplyArgs) -> ExitCode {
@@ -307,8 +381,94 @@ pub fn apply(args: ApplyArgs) -> ExitCode {
         args.dry_run,
         args.json,
     ) {
-        Ok(_) => ExitCode::SUCCESS,
+        Ok((_, manifest)) => {
+            if let (Some(path), Some(m)) = (&args.manifest, manifest)
+                && let Err(e) = std::fs::write(path, serde_json::to_vec_pretty(&m).unwrap())
+            {
+                return fail(
+                    1,
+                    &format!("cannot write {}: {e}", path.display()),
+                    args.json,
+                );
+            }
+            ExitCode::SUCCESS
+        }
         Err(code) => code,
+    }
+}
+
+// ---------------------------------------------------------------- verify
+
+#[derive(Debug, clap::Args)]
+pub struct VerifyArgs {
+    #[command(flatten)]
+    pub target: Target,
+    /// Expected fingerprint (`sha256:…`); exit 1 if the workspace differs.
+    #[arg(long)]
+    pub expect: Option<String>,
+    /// Compare against this manifest instead of the one recorded by the last apply.
+    #[arg(long, value_name = "FILE")]
+    pub against: Option<PathBuf>,
+    /// Print the observed manifest as JSON on stdout.
+    #[arg(long)]
+    pub json: bool,
+}
+
+pub fn verify(args: VerifyArgs) -> ExitCode {
+    let l = match load(&args.target, false) {
+        Ok(l) => l,
+        Err(code) => return code,
+    };
+    let plan = match make_plan(&l, &args.target, true, true, None, false) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    let now = veneer_steps::manifest::observe(&plan, &l.dirs, &spec_digest(&l));
+    let fp = now["fingerprint"].as_str().unwrap_or_default().to_string();
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&now).unwrap());
+    }
+    let reference_path = args
+        .against
+        .clone()
+        .unwrap_or_else(|| workspace_manifest_path(&l.dirs, &args.target.id));
+    let reference: Option<serde_json::Value> = std::fs::read(&reference_path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok());
+    let mut ok = true;
+    if let Some(expect) = &args.expect {
+        if expect != &fp {
+            eprintln!("✗ fingerprint {fp} does not match the expected {expect}");
+            ok = false;
+        }
+    } else if reference.is_none() {
+        return fail(
+            2,
+            &format!(
+                "no manifest at {} (run `veneer apply` first, or pass --expect/--against)",
+                reference_path.display()
+            ),
+            false,
+        );
+    }
+    if let Some(r) = &reference {
+        let diffs = veneer_steps::manifest::diff(&r["stable"], &now["stable"]);
+        if !diffs.is_empty() {
+            ok = false;
+            eprintln!("✗ the workspace differs from {}:", reference_path.display());
+            for d in diffs.iter().take(50) {
+                eprintln!("  {d}");
+            }
+            if diffs.len() > 50 {
+                eprintln!("  … {} more", diffs.len() - 50);
+            }
+        }
+    }
+    if ok {
+        eprintln!("✓ {fp}");
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
     }
 }
 

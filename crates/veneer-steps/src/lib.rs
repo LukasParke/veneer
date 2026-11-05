@@ -8,6 +8,7 @@ use std::process::Command;
 use veneer_exec::{Check, Cx, ExecError, Result, Steps, run_logged, write_atomic};
 use veneer_plan::{Dirs, Plan, Step, StepKind, adapters};
 
+pub mod manifest;
 pub mod mise;
 mod nix;
 mod repos;
@@ -97,6 +98,40 @@ fn installed(pm: Pm, name: &str) -> bool {
         Pm::Dnf => succeeds(Command::new("rpm").args(["-q", "--whatprovides", name])),
         Pm::Brew => succeeds(Command::new("brew").args(["list", "--versions", name])),
     }
+}
+
+fn package_version(pm: Pm, name: &str) -> Option<String> {
+    let out = match pm {
+        Pm::Apt => capture(Command::new("dpkg-query").args(["-W", "-f=${Version}", name])),
+        Pm::Apk => capture(Command::new("apk").args(["info", "-e", "-v", name])).map(|s| {
+            s.trim()
+                .strip_prefix(&format!("{name}-"))
+                .unwrap_or(s.trim())
+                .to_string()
+        }),
+        Pm::Dnf => capture(Command::new("rpm").args([
+            "-q",
+            "--qf",
+            "%{VERSION}-%{RELEASE}",
+            "--whatprovides",
+            name,
+        ])),
+        Pm::Brew => capture(Command::new("brew").args(["list", "--versions", name]))
+            .map(|s| s.split_whitespace().skip(1).collect::<Vec<_>>().join(" ")),
+    }?;
+    let v = out.trim().to_string();
+    (!v.is_empty()).then_some(v)
+}
+
+/// (name, installed version) for each package; `None` when not installed or unknown.
+pub(crate) fn package_versions(names: &[String]) -> Vec<(String, Option<String>)> {
+    let Ok(pm) = package_manager() else {
+        return names.iter().map(|n| (n.clone(), None)).collect();
+    };
+    names
+        .iter()
+        .map(|n| (n.clone(), package_version(pm, n)))
+        .collect()
 }
 
 fn missing_packages(names: &[String]) -> Result<Vec<String>> {
