@@ -94,7 +94,10 @@ fn builtin_modules_merge_with_inputs() {
     assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
     let tree = r.tree.unwrap().to_json();
     assert_eq!(tree["vars"]["claude_code_version"], "1.2.3");
-    assert_eq!(tree["tools"]["npm:@anthropic-ai/claude-code"]["version"], "{{ vars.claude_code_version }}");
+    assert_eq!(
+        tree["tools"]["npm:@anthropic-ai/claude-code"]["version"],
+        "{{ vars.claude_code_version }}"
+    );
     assert!(tree["harnesses"]["claude-code"].is_object());
     let r = resolve(
         &common::tree(&[("v.yaml", "version: 1\nuse: [veneer/nope@1]\n")]).1,
