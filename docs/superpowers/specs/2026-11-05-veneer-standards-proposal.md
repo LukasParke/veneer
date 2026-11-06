@@ -1,6 +1,6 @@
 # veneer: standards, portability, and resilience proposal
 
-- **Status:** Accepted (decisions in §8 resolved 2026-11-05)
+- **Status:** Implemented 2026-11-05 (M8–M15; see §9 for where the build differs from this text)
 - **Date:** 2026-11-05
 - **Builds on:** `2026-11-03-veneer-design.md`
 
@@ -503,3 +503,27 @@ provable environments, and every VM cloud without publishing.
 3. **OS package pinning:** pinning through snapshot mirrors is deferred. Packages are recorded
    exactly in the manifest, and the fingerprint detects drift.
 4. **Harnesses:** Claude Code and Codex (existing), plus Pi, OMP, and OpenCode (new in M15).
+
+## 9. As built (2026-11-05)
+
+All eight milestones shipped and pass their container suites. Differences from the text:
+
+1. **Harness config is user-level.** Every harness, including Claude Code, OMP, and
+   OpenCode, gets its config under the harness `home` (default `$HOME`): `~/.claude.json`,
+   `~/.omp/agent/mcp.json`, and `~/.config/opencode/opencode.json`. Writing into repos
+   would dirty them. Set `harnesses.<name>.home` to isolate workspaces that share a machine.
+   `$HOME` is not per-workspace by default.
+2. **Claude Code secrets are literal** in a 0600 `~/.claude.json`, matching what
+   `claude mcp add --env` stores. Pi, OMP, and OpenCode get env references.
+3. **Devfile `group: build` commands run in the workspace phase**, because they need the
+   cloned project sources. Only `events.preStart` maps to `hooks.build`.
+4. **No `mise.lock`.** Tool versions are pinned in `veneer.lock` only. mise installs exactly
+   that version, and the manifest records it.
+5. **`veneer fetch -o oci://…` is not built.** Push a bundle with
+   `oras cp --from-oci-layout DIR:bundle REF`.
+6. **Cloud Hypervisor and QEMU `virt` need a kernel with virtio-pci and PL011.** Distro
+   kernels have both. The Firecracker CI kernel has neither, so use it for Firecracker only.
+7. **`tools:` accepts `{ version, …mise options }`**, which wasn't in the proposal. The
+   Claude Code and OpenCode modules use `allow_builds` so their npm postinstall steps run.
+8. **Signing was tested with a cosign key pair.** Keyless (OIDC) signing goes through
+   unchanged to cosign, but needs an OIDC provider, so it wasn't exercised.
