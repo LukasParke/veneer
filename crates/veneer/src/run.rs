@@ -75,9 +75,10 @@ pub struct ApplyArgs {
     /// Also write the environment manifest here (it is always kept in the state dir).
     #[arg(long, value_name = "FILE")]
     pub manifest: Option<PathBuf>,
-    /// Restore this offline bundle (from `veneer fetch`) first; implies --offline.
-    #[arg(long, value_name = "DIR")]
-    pub from: Option<PathBuf>,
+    /// Restore this offline bundle (from `veneer fetch`: a directory, or `oci://ref`) first;
+    /// implies --offline.
+    #[arg(long, value_name = "DIR|oci://REF")]
+    pub from: Option<String>,
     /// Forbid network access: veneer and every child process fail fast instead.
     #[arg(long)]
     pub offline: bool,
@@ -439,8 +440,17 @@ pub fn execute(
 }
 
 /// Restores `--from` and switches the process (and its children) to offline mode.
-pub fn go_offline(from: Option<&std::path::Path>, json: bool) -> Result<(), ExitCode> {
-    if let Some(dir) = from {
+/// `oras` flags for plain-HTTP registries (`VENEER_OCI_INSECURE=1`).
+fn oras_insecure(flag: &str) -> Vec<String> {
+    if std::env::var_os("VENEER_OCI_INSECURE").is_some() {
+        vec![flag.to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
+pub fn go_offline(from: Option<&str>, json: bool) -> Result<(), ExitCode> {
+    if let Some(src) = from {
         let dirs = Dirs::from_env();
         let mut log = veneer_exec::Log::create(
             dirs.state
@@ -448,7 +458,36 @@ pub fn go_offline(from: Option<&std::path::Path>, json: bool) -> Result<(), Exit
                 .join(format!("restore-{}.log", std::process::id())),
         )
         .map_err(|e| fail(e.exit, &e.message, json))?;
-        match veneer_steps::bundle::restore(dir, &dirs, &mut log) {
+        // A registry bundle is copied to a local layout first (the last network access).
+        let dir = match src.strip_prefix("oci://") {
+            Some(reference) => {
+                let dest = dirs
+                    .cache
+                    .join("bundles")
+                    .join(&veneer_steps::manifest::sha256_hex(reference.as_bytes())[..16]);
+                let _ = std::fs::remove_dir_all(&dest);
+                let pulled = crate::supply::tool(&dirs, &mut log, crate::supply::ORAS, "oras")
+                    .and_then(|mut c| {
+                        c.arg("cp")
+                            .args(oras_insecure("--from-plain-http"))
+                            .arg("--to-oci-layout")
+                            .arg(reference)
+                            .arg(format!("{}:bundle", dest.display()));
+                        veneer_exec::run_logged(&mut c, &mut log)
+                    });
+                if let Err(e) = pulled {
+                    eprintln!("{}", log.tail(20));
+                    return Err(fail(
+                        e.exit,
+                        &format!("cannot pull bundle {src}: {}", e.message),
+                        json,
+                    ));
+                }
+                dest
+            }
+            None => PathBuf::from(src),
+        };
+        match veneer_steps::bundle::restore(&dir, &dirs, &mut log) {
             Ok(s) => {
                 if !json {
                     eprintln!(
@@ -460,7 +499,7 @@ pub fn go_offline(from: Option<&std::path::Path>, json: bool) -> Result<(), Exit
             Err(e) => {
                 return Err(fail(
                     e.exit,
-                    &format!("cannot restore {}: {}", dir.display(), e.message),
+                    &format!("cannot restore {src}: {}", e.message),
                     json,
                 ));
             }
@@ -803,6 +842,24 @@ pub fn lock(mut args: LockArgs) -> ExitCode {
             return fail(e.exit, &format!("cannot lock: {}", e.message), false);
         }
     };
+    match veneer_steps::lock::mise_lock(&plan, &l.dirs, &pins, &mut log) {
+        Ok(Some(bytes)) => {
+            let p = l.entry.with_file_name("mise.lock");
+            if let Err(e) = std::fs::write(&p, bytes) {
+                return fail(1, &format!("cannot write {}: {e}", p.display()), false);
+            }
+            eprintln!("✓ {} (tool checksums for every platform)", p.display());
+        }
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("{}", log.tail(20));
+            return fail(
+                e.exit,
+                &format!("cannot write mise.lock: {}", e.message),
+                false,
+            );
+        }
+    }
     let mut lock = read_lock(&l.entry);
     lock.tools = pins.tools;
     lock.images = pins.images;
@@ -882,9 +939,9 @@ pub fn doctor(args: DoctorArgs) -> ExitCode {
 pub struct FetchArgs {
     #[command(flatten)]
     pub target: Target,
-    /// Output directory (an OCI image layout).
-    #[arg(long, short)]
-    pub output: PathBuf,
+    /// Output: a directory (an OCI image layout), or `oci://registry/repo:tag` to push it.
+    #[arg(long, short, value_name = "DIR|oci://REF")]
+    pub output: String,
 }
 
 pub fn fetch(args: FetchArgs) -> ExitCode {
@@ -913,12 +970,18 @@ pub fn fetch(args: FetchArgs) -> ExitCode {
         Ok(log) => log,
         Err(e) => return fail(e.exit, &e.message, false),
     };
+    let push_to = args.output.strip_prefix("oci://").map(str::to_string);
+    let staging = tempfile::tempdir().expect("temp dir");
+    let out_dir = match &push_to {
+        Some(_) => staging.path().join("bundle"),
+        None => PathBuf::from(&args.output),
+    };
     eprintln!(
         "▸ fetching into {} (log: {})",
-        args.output.display(),
+        args.output,
         log.path.display()
     );
-    match veneer_steps::bundle::fetch(&plan, &l.dirs, &args.output, &mut log) {
+    match veneer_steps::bundle::fetch(&plan, &l.dirs, &out_dir, &mut log) {
         Ok(s) => {
             eprintln!(
                 "✓ bundle {} for {} (tools: {}, images: {}, repos: {}, sources: {})",
@@ -929,6 +992,26 @@ pub fn fetch(args: FetchArgs) -> ExitCode {
                 s.repos,
                 s.sources
             );
+            if let Some(reference) = push_to {
+                let pushed = crate::supply::tool(&l.dirs, &mut log, crate::supply::ORAS, "oras")
+                    .and_then(|mut c| {
+                        c.arg("cp")
+                            .args(oras_insecure("--to-plain-http"))
+                            .arg("--from-oci-layout")
+                            .arg(format!("{}:bundle", out_dir.display()))
+                            .arg(&reference);
+                        veneer_exec::run_logged(&mut c, &mut log)
+                    });
+                if let Err(e) = pushed {
+                    eprintln!("{}", log.tail(20));
+                    return fail(
+                        e.exit,
+                        &format!("cannot push the bundle: {}", e.message),
+                        false,
+                    );
+                }
+                eprintln!("✓ pushed oci://{reference}");
+            }
             ExitCode::SUCCESS
         }
         Err(e) => {

@@ -94,6 +94,43 @@ pub fn config_path(dirs: &Dirs) -> PathBuf {
     mise_dir(dirs).join("config.toml")
 }
 
+/// mise's lockfile for veneer's config: exact versions plus per-platform checksums, which
+/// mise records when the file exists and verifies on every install.
+pub fn lock_path(dirs: &Dirs) -> PathBuf {
+    mise_dir(dirs).join("mise.lock")
+}
+
+/// Puts the project's `mise.lock` (from `veneer lock`) in place, or starts an empty one.
+fn place_lock(dirs: &Dirs, project_lock: Option<&std::path::Path>) -> Result<()> {
+    let dest = lock_path(dirs);
+    match project_lock {
+        Some(src) => {
+            let bytes = std::fs::read(src)
+                .map_err(|e| ExecError::failed(format!("cannot read {}: {e}", src.display())))?;
+            write_atomic(&dest, &bytes).map_err(|e| ExecError::failed(e.to_string()))
+        }
+        // No project lock: leave mise's lock behavior untouched.
+        None => Ok(()),
+    }
+}
+
+/// Writes a mise.lock covering every platform for `tools` (used by `veneer lock`).
+pub fn lock_all(
+    dirs: &Dirs,
+    tools: &IndexMap<String, String>,
+    options: &IndexMap<String, serde_json::Value>,
+    log: &mut Log,
+) -> Result<Vec<u8>> {
+    let bin = ensure_mise(dirs, log)?;
+    write_atomic(&config_path(dirs), render_config(tools, options).as_bytes())
+        .map_err(|e| ExecError::failed(format!("cannot write mise config: {e}")))?;
+    if !lock_path(dirs).exists() {
+        write_atomic(&lock_path(dirs), b"").map_err(|e| ExecError::failed(e.to_string()))?;
+    }
+    run_logged(mise_cmd(&bin, dirs).args(["lock", "--global"]), log)?;
+    std::fs::read(lock_path(dirs)).map_err(|e| ExecError::failed(e.to_string()))
+}
+
 /// Environment that isolates mise from the user's own installation.
 pub fn mise_env(dirs: &Dirs) -> BTreeMap<String, String> {
     let d = mise_dir(dirs);
@@ -165,7 +202,13 @@ pub fn check(
     dirs: &Dirs,
     tools: &IndexMap<String, String>,
     options: &IndexMap<String, serde_json::Value>,
+    project_lock: Option<&std::path::Path>,
 ) -> Check {
+    if let Some(l) = project_lock
+        && std::fs::read(l).ok() != std::fs::read(lock_path(dirs)).ok()
+    {
+        return Check::Needed("mise.lock changed".into());
+    }
     let bin = std::env::var_os("VENEER_MISE_BIN")
         .map(PathBuf::from)
         .unwrap_or_else(|| dirs.mise_bin());
@@ -187,9 +230,11 @@ pub fn apply(
     dirs: &Dirs,
     tools: &IndexMap<String, String>,
     options: &IndexMap<String, serde_json::Value>,
+    project_lock: Option<&std::path::Path>,
     log: &mut Log,
 ) -> Result<()> {
     let bin = ensure_mise(dirs, log)?;
+    place_lock(dirs, project_lock)?;
     write_atomic(&config_path(dirs), render_config(tools, options).as_bytes())
         .map_err(|e| ExecError::failed(format!("cannot write mise config: {e}")))?;
     run_logged(mise_cmd(&bin, dirs).arg("install"), log)

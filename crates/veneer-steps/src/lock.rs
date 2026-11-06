@@ -58,6 +58,28 @@ pub fn remote_commit(url: &str, git_ref: Option<&str>, log: &mut Log) -> Result<
         .ok_or_else(|| ExecError::failed(format!("`{r}` does not exist in {url}")))
 }
 
+/// A mise.lock (all platforms) for the plan's tools at their pinned versions.
+pub fn mise_lock(plan: &Plan, dirs: &Dirs, pins: &Pins, log: &mut Log) -> Result<Option<Vec<u8>>> {
+    for step in &plan.steps {
+        if let StepKind::Tools { tools, options, .. } = &step.kind {
+            let pinned: indexmap::IndexMap<String, String> = tools
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        pins.tools
+                            .get(&tool_key(k, v))
+                            .cloned()
+                            .unwrap_or_else(|| v.clone()),
+                    )
+                })
+                .collect();
+            return mise::lock_all(dirs, &pinned, options, log).map(Some);
+        }
+    }
+    Ok(None)
+}
+
 /// Resolves pins for every tool, image, and repo in `plan` (planned without pins). Existing
 /// pins are kept unless `update`; pins for things the spec no longer mentions are dropped.
 pub fn resolve(

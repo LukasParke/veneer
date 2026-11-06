@@ -297,12 +297,18 @@ suite_sandbox() {
 # ------------------------------------------------------------------ resilience
 suite_resilience() {
   echo "▸ resilience"
-  local img="buildpack-deps:bookworm-scm" a="veneer-ct-res-a" b="veneer-ct-res-b"
-  start "$a" "$img"
+  local img="buildpack-deps:bookworm-scm" a="veneer-ct-res-a" b="veneer-ct-res-b" c="veneer-ct-res-c"
+  local net="veneer-ct-res-net" reg="veneer-ct-res-reg"
+  docker network create "$net" >/dev/null 2>&1
+  docker rm -f "$reg" >/dev/null 2>&1
+  docker run -d --name "$reg" --network "$net" registry:2 >/dev/null
+  start "$a" "$img" --network "$net"
   docker cp "$here/offline-fixture" "$a:/p" >/dev/null
   docker cp "$here/resilience-fixture" "$a:/r" >/dev/null
   x() { docker exec "$a" sh -c "$*"; }
   check "lock: pins tools, images, and repos in veneer.lock" x "veneer lock /p && python3 -c 'import json,re; l=json.load(open(\"/p/.veneer/veneer.lock\")); assert re.fullmatch(r\"1\\.7(\\.\\d+)?\", l[\"tools\"][\"jq@1.7\"]), l; assert l[\"images\"][\"busybox:1.36\"].startswith(\"sha256:\"); assert len(l[\"repos\"][\"/srv/upstream.git#main\"]) == 40'"
+  check "lock: writes mise.lock with checksums for every platform" x "grep -q 'linux-x64' /p/.veneer/mise.lock && grep -q 'linux-arm64' /p/.veneer/mise.lock && grep -q 'macos-arm64' /p/.veneer/mise.lock && grep -q 'checksum = \"sha256:' /p/.veneer/mise.lock"
+  check "lock: a tampered mise.lock checksum stops the install" x "cp -r /p /p-bad && sed -i 's/checksum = \"sha256:[0-9a-f]\{8\}/checksum = \"sha256:00000000/' /p-bad/.veneer/mise.lock && ! VENEER_STATE_DIR=/tmp/bad veneer apply /p-bad --frozen --phase build --id bad > /tmp/bad.log 2>&1 && grep -qi 'checksum' /tmp/bad.log /tmp/bad/logs/*/*tools* 2>/dev/null"
   check "lock: --frozen apply uses the pins" x "veneer apply /p --frozen --id t1 --json | tee /tmp/frozen.ndjson | grep -q '\"event\":\"run.done\",\"ok\":true' && test \"\$(git -C /work/t1/src rev-parse HEAD)\" = \"\$(python3 -c 'import json; print(json.load(open(\"/p/.veneer/veneer.lock\"))[\"repos\"][\"/srv/upstream.git#main\"])')\""
   check "lock: --frozen refuses an unpinned image before doing anything" x "sed -i 's/images: \[busybox:1.36\]/images: [busybox:1.36, alpine:3.20]/' /p/.veneer/veneer.yaml; veneer apply /p --frozen --id t9 2>/tmp/f.err; rc=\$?; sed -i 's/, alpine:3.20//' /p/.veneer/veneer.yaml; [ \$rc = 2 ] && grep -q 'V1006' /tmp/f.err && ! test -e /var/lib/veneer/workspaces/t9/journal.json"
   check "retry: a flaky hook is retried with backoff until it passes" x "rm -f /tmp/flaky; veneer apply /r --id r1 --json > /tmp/retry.ndjson; grep -q '\"event\":\"run.done\",\"ok\":true' /tmp/retry.ndjson && [ \$(grep -c '\"event\":\"step.retry\"' /tmp/retry.ndjson) = 2 ]"
@@ -319,8 +325,14 @@ suite_resilience() {
   docker cp "$work/bundle" "$b:/bundle" >/dev/null; docker cp "$work/proj-off" "$b:/p" >/dev/null
   check "offline: apply --from a bundle with no network" sh -c "docker exec $b veneer apply /p --frozen --from /bundle --id off --json | tee $logs/offline.ndjson | grep -q '\"event\":\"run.done\",\"ok\":true' && docker exec $b sh -c 'grep -q jq-1.7 /work/off/jq.txt && test -f /work/off/src/README.md && test -s /var/lib/veneer/data/images/busybox_1.36.tar'"
   check "offline: the environment fingerprint equals the online run" sh -c "[ -n '$fpa' ] && docker exec $b veneer verify /p --frozen --id off --expect '$fpa'"
+  check "offline: fetch pushes the bundle to a registry (oci://)" x "VENEER_OCI_INSECURE=1 veneer fetch /p --frozen -o oci://$reg:5000/bundles/p:v1"
+  docker rm -f "$c" >/dev/null 2>&1
+  docker run -d --name "$c" --network "$net" -e VENEER_OCI_INSECURE=1 "$img" sleep infinity >/dev/null
+  docker cp "$bin" "$c:/usr/local/bin/veneer" >/dev/null; docker cp "$work/proj-off" "$c:/p" >/dev/null
+  check "offline: apply --from oci:// matches the online fingerprint" sh -c "docker exec $c veneer apply /p --frozen --from oci://$reg:5000/bundles/p:v1 --id off --json 2>&1 | tee $logs/offline-oci.ndjson | grep -q '\"ok\":true' && docker exec $c veneer verify /p --frozen --id off --expect '$fpa'"
   check "offline: a corrupt bundle blob is rejected" sh -c "docker exec $b sh -c 'f=\$(ls -S /bundle/blobs/sha256/* | head -1); echo x >> \$f; ! veneer apply /p --from /bundle --id off2 2>/tmp/c.err && grep -q corrupt /tmp/c.err'"
-  docker rm -f "$a" "$b" >/dev/null
+  docker rm -f "$a" "$b" "$c" "$reg" >/dev/null
+  docker network rm "$net" >/dev/null 2>&1
 }
 
 # ------------------------------------------------------------------ cloudinit

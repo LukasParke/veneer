@@ -495,6 +495,11 @@ pub fn plan(
             }
         }
         if !tools.is_empty() && want("tools", "tools") {
+            let lockfile = Some(spec_dir.join("mise.lock")).filter(|p| p.is_file());
+            let lock_bytes = lockfile
+                .as_ref()
+                .and_then(|p| std::fs::read(p).ok())
+                .unwrap_or_default();
             steps.push(step(
                 "tools",
                 "tools",
@@ -502,8 +507,9 @@ pub fn plan(
                 StepKind::Tools {
                     tools,
                     options: tool_options,
+                    lockfile,
                 },
-                &[],
+                &[&lock_bytes],
             ));
         }
 
@@ -1033,6 +1039,9 @@ pub fn bake_inputs(spec: &Spec, tree: &Node, entry: &Path) -> Result<BakeInputs,
         out.early.push(normalize(
             base_dir(tree, "/tools/from", &spec_dir).join(tool_version(v)),
         ));
+    }
+    if spec_dir.join("mise.lock").is_file() {
+        out.early.push(spec_dir.join("mise.lock"));
     }
     for (i, d) in spec.deps.iter().enumerate() {
         let manifest =

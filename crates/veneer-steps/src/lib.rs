@@ -445,7 +445,11 @@ impl Steps for StepImpls {
                     Check::Needed(format!("missing packages: {}", missing.join(", ")))
                 }
             }
-            StepKind::Tools { tools, options } => mise::check(cx.dirs, tools, options),
+            StepKind::Tools {
+                tools,
+                options,
+                lockfile,
+            } => mise::check(cx.dirs, tools, options, lockfile.as_deref()),
             StepKind::Nix { refs } => nix::check(cx.dirs, refs),
             StepKind::Deps { dir, manager, .. } => match adapters::install_marker(*manager) {
                 Some(m) if !dir.join(m).exists() => Check::Needed(format!("{m} missing")),
@@ -503,7 +507,11 @@ impl Steps for StepImpls {
     fn apply(&self, step: &Step, cx: &mut Cx<'_>) -> Result<()> {
         match &step.kind {
             StepKind::Packages { names } => apply_packages(names, cx),
-            StepKind::Tools { tools, options } => mise::apply(cx.dirs, tools, options, cx.log),
+            StepKind::Tools {
+                tools,
+                options,
+                lockfile,
+            } => mise::apply(cx.dirs, tools, options, lockfile.as_deref(), cx.log),
             StepKind::Nix { refs } => nix::apply(cx.dirs, refs, cx.log),
             StepKind::Deps {
                 dir,

@@ -517,10 +517,12 @@ All eight milestones shipped and pass their container suites. Differences from t
    `claude mcp add --env` stores. Pi, OMP, and OpenCode get env references.
 3. **Devfile `group: build` commands run in the workspace phase**, because they need the
    cloned project sources. Only `events.preStart` maps to `hooks.build`.
-4. **No `mise.lock`.** Tool versions are pinned in `veneer.lock` only. mise installs exactly
-   that version, and the manifest records it.
-5. **`veneer fetch -o oci://…` is not built.** Push a bundle with
-   `oras cp --from-oci-layout DIR:bundle REF`.
+4. **`mise.lock` is per project.** `veneer lock` writes `.veneer/mise.lock` (versions and
+   per-platform checksums for every platform) next to `veneer.lock`. Installs run against
+   it, and a tampered checksum stops the install. Projects without one keep mise's default
+   behavior.
+5. **`veneer fetch -o oci://…` and `apply --from oci://…`** push and pull bundles with
+   `oras cp` (`VENEER_OCI_INSECURE=1` for plain-HTTP registries).
 6. **Cloud Hypervisor and QEMU `virt` need a kernel with virtio-pci and PL011.** Distro
    kernels have both. The Firecracker CI kernel has neither, so use it for Firecracker only.
 7. **`tools:` accepts `{ version, …mise options }`**, which wasn't in the proposal. The

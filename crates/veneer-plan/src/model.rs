@@ -70,6 +70,9 @@ pub enum StepKind {
         /// mise tool options by tool (e.g. `allow_builds`).
         #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
         options: IndexMap<String, serde_json::Value>,
+        /// The project's `mise.lock` (next to the spec), installed against when present.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lockfile: Option<PathBuf>,
     },
     /// Flake references installed into veneer's own Nix profile.
     Nix {

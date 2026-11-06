@@ -164,7 +164,7 @@ pub fn push(tag: &str, log: &mut Log) -> Result<String> {
 }
 
 /// A tool run through veneer's mise (`aqua:` backend), pinned for stable flags.
-fn tool(dirs: &veneer_plan::Dirs, log: &mut Log, spec: &str, bin: &str) -> Result<Command> {
+pub fn tool(dirs: &veneer_plan::Dirs, log: &mut Log, spec: &str, bin: &str) -> Result<Command> {
     let mise = veneer_steps::mise::ensure_mise(dirs, log)?;
     let mut c = veneer_steps::mise::mise_cmd(&mise, dirs);
     c.args(["exec", spec, "--", bin]);
@@ -174,7 +174,7 @@ fn tool(dirs: &veneer_plan::Dirs, log: &mut Log, spec: &str, bin: &str) -> Resul
     Ok(c)
 }
 
-const ORAS: &str = "aqua:oras-project/oras@1.2.3";
+pub const ORAS: &str = "aqua:oras-project/oras@1.2.3";
 const COSIGN: &str = "aqua:sigstore/cosign@2.5.3";
 
 pub struct Outcome {

@@ -168,9 +168,15 @@ pub fn fetch(plan: &Plan, dirs: &Dirs, out: &Path, log: &mut Log) -> Result<Summ
     let mut sum = Summary::default();
     for step in &plan.steps {
         match &step.kind {
-            StepKind::Tools { tools, options } => {
-                if crate::mise::check(dirs, tools, options) != veneer_exec::Check::Satisfied {
-                    crate::mise::apply(dirs, tools, options, log)?;
+            StepKind::Tools {
+                tools,
+                options,
+                lockfile,
+            } => {
+                if crate::mise::check(dirs, tools, options, lockfile.as_deref())
+                    != veneer_exec::Check::Satisfied
+                {
+                    crate::mise::apply(dirs, tools, options, lockfile.as_deref(), log)?;
                 }
                 let t = work.path().join("tools.tar");
                 if tar_paths(
@@ -308,12 +314,19 @@ pub fn restore(dir: &Path, dirs: &Dirs, log: &mut Log) -> Result<Summary> {
                 dir.display()
             ))
         })?;
-    let desc = index["manifests"]
+    // The index entry may omit `artifactType` (e.g. after `oras cp`): check each manifest.
+    let (desc, manifest) = index["manifests"]
         .as_array()
-        .and_then(|m| m.iter().find(|d| d["artifactType"] == ARTIFACT_TYPE))
+        .into_iter()
+        .flatten()
+        .find_map(|d| {
+            let m: Value =
+                serde_json::from_slice(&std::fs::read(verified(dir, d).ok()?).ok()?).ok()?;
+            (d["artifactType"] == ARTIFACT_TYPE || m["artifactType"] == ARTIFACT_TYPE)
+                .then(|| (d.clone(), m))
+        })
         .ok_or_else(|| ExecError::failed(format!("{} holds no veneer bundle", dir.display())))?;
-    let manifest: Value =
-        serde_json::from_slice(&std::fs::read(verified(dir, desc)?).map_err(io)?).map_err(io)?;
+    let desc = &desc;
     let mut sum = Summary {
         digest: desc["digest"].as_str().unwrap_or_default().to_string(),
         ..Default::default()

@@ -63,13 +63,13 @@ veneer vm snapshot|restore <bundle> # Firecracker: snapshot a staged microVM, re
 veneer vm boot --vmm firecracker|cloud-hypervisor|qemu <bundle>
 veneer lsp                          # language server: diagnostics, hover, completion
 veneer entrypoint -- <cmd>          # container entrypoint: workspace phase, then exec
-veneer lock [--update]              # pin sources, tool versions, image digests, repo commits
+veneer lock [--update]              # pin sources, tool versions (+ mise.lock checksums), image digests, repo commits
 veneer apply --frozen               # fail on anything not pinned
 veneer verify [--expect sha256:…]   # re-observe the workspace; compare its fingerprint
 veneer sbom --format cyclonedx|spdx # SBOM of a workspace, from its manifest
 veneer doctor                       # host requirements, checked before any step runs
-veneer fetch -o DIR                 # offline bundle (OCI image layout)
-veneer apply --from DIR             # restore it and run with the network forbidden
+veneer fetch -o DIR|oci://REF       # offline bundle (OCI image layout), or push it
+veneer apply --from DIR|oci://REF   # restore it and run with the network forbidden
 veneer schema                       # JSON Schema for editors
 ```
 
