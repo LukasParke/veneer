@@ -44,6 +44,9 @@ DISTROS="${DISTROS:-ubuntu:24.04 debian:12 alpine:3.20 fedora:41}"
 TOKEN="tok-s3cret-value"
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/veneer-ct.XXXXXX")"
+# Test repos are bind-mounted from the host. On Linux they keep the host user's uid, and git (as
+# root in the container) refuses them as "dubious ownership"; macOS Docker maps them to root.
+GITSAFE="-e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=*"
 logs="$work/logs"
 mkdir -p "$logs"
 pass=0
@@ -71,7 +74,7 @@ git clone -q --bare "$work/upstream-src" "$work/upstream.git"
 start() { # start <name> <image> [docker run args...]
   local name="$1" image="$2"; shift 2
   docker rm -f "$name" >/dev/null 2>&1
-  docker run -d --name "$name" -e TEST_API_TOKEN="$TOKEN" -v "$work/upstream.git:/srv/upstream.git:ro" "$@" \
+  docker run -d --name "$name" -e TEST_API_TOKEN="$TOKEN" $GITSAFE -v "$work/upstream.git:/srv/upstream.git:ro" "$@" \
     "$image" sleep infinity >/dev/null
   docker cp "$bin" "$name:/usr/local/bin/veneer" >/dev/null
 }
@@ -156,7 +159,7 @@ suite_bake() {
   check "bake: oci image builds" "$host_bin" bake "$proj" --veneer-bin "$bin" --tag "$tag" --context "$work/bake-ctx"
   check "bake: one layer per group in Containerfile" sh -c "grep -c 'RUN \[\"veneer\", \"apply\", \"--phase\", \"build\", \"--only\"' '$work/bake-ctx/Containerfile' | grep -qx 3"
   local t0=$(date +%s)
-  check "bake: entrypoint runs workspace phase then the command" sh -c "docker run --rm -e TEST_API_TOKEN=$TOKEN -v $work/upstream.git:/srv/upstream.git:ro $tag sh -c 'jq --version && yq --version && cat /work/default/app/.env && test -f /work/default/src/README.md' | tee $logs/bake-run.txt | grep -q 'TOKEN=$TOKEN'"
+  check "bake: entrypoint runs workspace phase then the command" sh -c "docker run --rm -e TEST_API_TOKEN=$TOKEN $GITSAFE -v $work/upstream.git:/srv/upstream.git:ro $tag sh -c 'jq --version && yq --version && cat /work/default/app/.env && test -f /work/default/src/README.md' | tee $logs/bake-run.txt | grep -q 'TOKEN=$TOKEN'"
   local secs=$(( $(date +%s) - t0 ))
   check "bake: warm start took ${secs}s (< 30s)" test "$secs" -lt 30
   check "bake: baked tools need no download at start" sh -c "grep -q 1.7.1 $logs/bake-run.txt"
@@ -166,7 +169,7 @@ suite_bake() {
   fi
   echo "touch" >"$proj/NOTES.md"
   check "bake: rebuild after an unrelated edit reuses cached layers" sh -c "'$host_bin' bake '$proj' --veneer-bin '$bin' --tag '$tag' && grep -c CACHED \$(ls -t '$work/host-state/logs'/bake-*.log | head -n1) | awk '{exit !(\$1 >= 5)}'"
-  check "bake: --overlay reaches every in-image step (node in image)" sh -c "'$host_bin' bake '$proj' --veneer-bin '$bin' --tag veneer-ct/fixture:node --overlay '$proj/.veneer/overlays/node.overlay.yaml' && docker run --rm -e TEST_API_TOKEN=$TOKEN -v $work/upstream.git:/srv/upstream.git:ro veneer-ct/fixture:node sh -c 'node --version && test -f /opt/veneer/project/node_modules/is-number/package.json' | grep -q v22.11.0"
+  check "bake: --overlay reaches every in-image step (node in image)" sh -c "'$host_bin' bake '$proj' --veneer-bin '$bin' --tag veneer-ct/fixture:node --overlay '$proj/.veneer/overlays/node.overlay.yaml' && docker run --rm -e TEST_API_TOKEN=$TOKEN $GITSAFE -v $work/upstream.git:/srv/upstream.git:ro veneer-ct/fixture:node sh -c 'node --version && test -f /opt/veneer/project/node_modules/is-number/package.json' | grep -q v22.11.0"
   check "bake: rootfs ext4 image" sh -c "'$host_bin' bake '$proj' --veneer-bin '$bin' --tag '$tag' --target rootfs -o '$work/rootfs.ext4' && file '$work/rootfs.ext4' | grep -qi ext4"
   printf 'fake-vmlinux' >"$work/vmlinux"
   check "bake: firecracker bundle (rootfs + init shim + kernel + vm-config)" sh -c "'$host_bin' bake '$proj' --veneer-bin '$bin' --tag '$tag' --target firecracker --kernel '$work/vmlinux' -o '$work/fc' && python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); assert c[\"drives\"][0][\"path_on_host\"]==\"rootfs.ext4\" and \"init=/sbin/veneer-init\" in c[\"boot-source\"][\"boot_args\"]' '$work/fc/vm-config.json' && cmp -s '$work/vmlinux' '$work/fc/vmlinux' && docker run --rm -v '$work/fc:/fc' alpine:3.20 sh -c 'apk add --no-cache e2fsprogs-extra >/dev/null && debugfs -R \"cat /sbin/veneer-init\" /fc/rootfs.ext4 2>/dev/null > /tmp/init && sh -n /tmp/init && grep -q \"veneer apply /opt/veneer/project/.veneer/veneer.yaml --phase workspace\" /tmp/init && debugfs -R \"stat /usr/local/bin/veneer\" /fc/rootfs.ext4 2>/dev/null | grep -q Inode'"
@@ -286,7 +289,7 @@ suite_sandbox() {
     unset VENEER_STATE_DIR
   fi
   local t0=$(date +%s)
-  check "sandbox: up --count 3 from the baked image" sh -c "'$host_bin' up '$here/fixture' --image $image --count 3 --name ct-sb --json --env TEST_API_TOKEN=$TOKEN -v $work/upstream.git:/srv/upstream.git:ro | tee $logs/sb.ndjson | grep -c '\"ok\":true' | grep -qx 3"
+  check "sandbox: up --count 3 from the baked image" sh -c "'$host_bin' up '$here/fixture' --image $image --count 3 --name ct-sb --json --env TEST_API_TOKEN=$TOKEN --env GIT_CONFIG_COUNT=1 --env GIT_CONFIG_KEY_0=safe.directory --env GIT_CONFIG_VALUE_0='*' -v $work/upstream.git:/srv/upstream.git:ro | tee $logs/sb.ndjson | grep -c '\"ok\":true' | grep -qx 3"
   local secs=$(( $(date +%s) - t0 ))
   check "sandbox: 3 warm sandboxes ready in ${secs}s (< 60s)" test "$secs" -lt 60
   check "sandbox: ls lists them" sh -c "'$host_bin' ls | grep -c '^ct-sb-' | grep -qx 3"
@@ -446,7 +449,7 @@ suite_supply() {
   docker run -d --name "$reg" -p 5005:5000 registry:2 >/dev/null
   sleep 2
   mkdir -p "$att" "$work/keys"
-  docker run --rm -e COSIGN_PASSWORD= -v "$work/keys:/k" -w /k "$cosign" generate-key-pair >/dev/null 2>&1
+  docker run --rm --user "$(id -u):$(id -g)" -e COSIGN_PASSWORD= -v "$work/keys:/k" -w /k "$cosign" generate-key-pair >/dev/null 2>&1
   local hs="$work/host-state"
   check "supply: bake --push with SBOMs and provenance" sh -c "env VENEER_STATE_DIR=$hs '$host_bin' bake '$here/vm-fixture' --veneer-bin '$bin' --tag $ref:v1 --push --sbom cyclonedx,spdx --provenance --insecure-registry --attest-dir $att > $work/digest1 2>$logs/supply-bake1.log && grep -q '^$ref@sha256:' $work/digest1"
   local d1; d1=$(cat "$work/digest1" 2>/dev/null)
@@ -476,7 +479,7 @@ suite_vm() {
   $kx bash -c "set -e; cd $shared; arch=\$(uname -m)
     [ -x firecracker ] || { curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/$fcv/firecracker-$fcv-\$arch.tgz | tar -xz; cp release-$fcv-\$arch/firecracker-$fcv-\$arch firecracker; }
     [ -s vmlinux ] && file vmlinux | grep -q 'Linux kernel' || curl -fsSL -o vmlinux https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.15/\$arch/vmlinux-6.1.155
-    command -v qemu-system-\$arch >/dev/null || sudo DEBIAN_FRONTEND=noninteractive apt-get -qq install -y qemu-system-arm qemu-system-x86 qemu-efi-aarch64 >/dev/null" >/dev/null 2>&1
+    { command -v qemu-system-\$arch && command -v qemu-img; } >/dev/null || { sudo apt-get -qq update && sudo DEBIAN_FRONTEND=noninteractive apt-get -qq install -y qemu-system-arm qemu-system-x86 qemu-efi-aarch64 qemu-utils >/dev/null; }" >/dev/null 2>&1
   local vb="$shared/veneer-linux"; cp "$bin" "$vb"; cp "$here/boot-cloudinit.sh" "$shared/boot-cloudinit.sh"
   rm -rf "$shared/bundle"
   check "vm: bake firecracker bundle with a real kernel" env VENEER_STATE_DIR="$work/host-state" "$host_bin" bake "$here/vm-fixture" --veneer-bin "$bin" --tag veneer-ct/vm:latest --target firecracker --kernel "$shared/vmlinux" -o "$shared/bundle"

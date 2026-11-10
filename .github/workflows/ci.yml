@@ -35,4 +35,9 @@ jobs:
           else
             echo "no /dev/kvm on this runner; the vm suite will report it"
           fi
+      - uses: jdx/mise-action@v2 # the k8s suite runs kind + kubectl through `mise x`
+        with:
+          install: false
       - run: tests/containers/run.sh
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # mise resolves aqua tools through the GitHub API
