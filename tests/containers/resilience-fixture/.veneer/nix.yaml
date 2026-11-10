@@ -1,0 +1,5 @@
+version: 1
+tools:
+  "nix:hello": latest
+workspace:
+  files: []

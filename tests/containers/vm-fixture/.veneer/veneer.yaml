@@ -1,0 +1,15 @@
+# microVM fixture: baked into a Firecracker bundle, snapshotted, and restored.
+version: 1
+base: alpine:3.20
+packages: [ca-certificates]
+tools:
+  jq: "1.7.1"
+env:
+  IN_VM: "yes"
+workspace:
+  root: /work/{{ workspace.id }}
+  files:
+    - { src: hello.txt.j2, dest: hello.txt }
+hooks:
+  workspace:
+    - { run: "date +%s%N > booted-at.txt", creates: booted-at.txt }

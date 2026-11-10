@@ -1,0 +1,4 @@
+version: 1
+extends: [../devfile.yaml]
+workspace:
+  root: "/work/{{ workspace.id }}"

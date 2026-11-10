@@ -1,0 +1,21 @@
+schemaVersion: 2.2.0
+metadata:
+  name: devfile-app
+projects:
+  - name: web
+    git:
+      remotes: { origin: /srv/upstream.git }
+      checkoutFrom: { revision: main }
+components:
+  - name: tools
+    container:
+      image: alpine:3.20
+      env:
+        - { name: APP_HOME, value: "${PROJECTS_ROOT}/web" }
+commands:
+  - id: build
+    exec: { component: tools, commandLine: "wc -l README.md > lines.txt", workingDir: "${PROJECT_SOURCE}", group: { kind: build, isDefault: true } }
+  - id: greet
+    exec: { component: tools, commandLine: "echo devfile-ok > greet.txt", workingDir: "${PROJECTS_ROOT}" }
+events:
+  postStart: [greet]

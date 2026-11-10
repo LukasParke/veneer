@@ -1,0 +1,10 @@
+{
+  "id": "hello",
+  "version": "1.0.0",
+  "name": "Hello",
+  "options": {
+    "greeting": { "type": "string", "default": "hello" },
+    "loud": { "type": "boolean", "default": false }
+  },
+  "containerEnv": { "HELLO_HOME": "/opt/hello", "PATH": "/opt/hello/bin:${PATH}" }
+}

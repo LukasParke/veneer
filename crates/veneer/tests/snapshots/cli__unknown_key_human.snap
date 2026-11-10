@@ -1,0 +1,16 @@
+---
+source: crates/veneer/tests/cli.rs
+expression: text
+---
+V1009
+
+  × unknown field `pakages`, expected one of `version`, `base`, `extends`, `use`, `vars`,
+  │ `secrets`, `env`, `packages`, `tools`, `deps`, `images`, `workspace`, `services`, `hooks`,
+  │ `defaults`, `mcp`, `harnesses`
+   ╭─[.veneer/veneer.yaml:2:10]
+ 1 │ version: 1
+ 2 │ pakages: [git]
+   ·          ──┬──
+   ·            ╰── here
+   ╰────
+  help: at `/pakages`

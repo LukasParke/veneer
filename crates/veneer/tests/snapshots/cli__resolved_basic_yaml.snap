@@ -1,0 +1,24 @@
+---
+source: crates/veneer/tests/cli.rs
+expression: "String::from_utf8(out).unwrap()"
+---
+version: 1
+base: "ubuntu:24.04"
+packages:
+- git
+- libpq-dev
+env:
+  LOG_LEVEL: info
+  DATABASE_URL: "postgres://localhost/{{ vars.db_name }}"
+vars:
+  python: "3.12"
+  db_name: "bench_{{ workspace.id }}"
+tools:
+  node: 22
+  "aqua:BurntSushi/ripgrep": latest
+  python: "{{ vars.python }}"
+services:
+  db:
+    image: "postgres:16"
+    env:
+      POSTGRES_DB: "{{ vars.db_name }}"

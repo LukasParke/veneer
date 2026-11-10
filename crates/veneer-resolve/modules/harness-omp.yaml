@@ -1,0 +1,15 @@
+# Built-in module: veneer/harness/omp@1
+# Installs oh-my-pi (`omp`) through mise, with Bun (its recommended runtime), and renders
+# `mcp:` into ~/.omp/agent/mcp.json.
+#   use: [{ module: veneer/harness/omp@1, with: { omp_version: "1.2.3" } }]
+version: 1
+vars:
+  node_version: "22"
+  bun_version: latest
+  omp_version: latest
+tools:
+  node: "{{ vars.node_version }}"
+  bun: "{{ vars.bun_version }}"
+  "npm:@oh-my-pi/pi-coding-agent": "{{ vars.omp_version }}"
+harnesses:
+  omp: {}

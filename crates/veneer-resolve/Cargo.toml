@@ -1,0 +1,30 @@
+[package]
+name = "veneer-resolve"
+description = "Load, layer, and resolve veneer specs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+veneer-spec.workspace = true
+veneer-template.workspace = true
+indexmap.workspace = true
+serde_json.workspace = true
+suspect-source.workspace = true
+suspect-syntax.workspace = true
+suspect-low.workspace = true
+suspect-ref.workspace = true
+suspect-overlay.workspace = true
+serde.workspace = true
+ureq.workspace = true
+sha2.workspace = true
+hex.workspace = true
+flate2.workspace = true
+tar.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile.workspace = true
+suspect-ref.workspace = true

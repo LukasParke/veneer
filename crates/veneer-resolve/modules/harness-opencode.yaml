@@ -1,0 +1,16 @@
+# Built-in module: veneer/harness/opencode@1
+# Installs OpenCode through mise (npm backend) and renders `mcp:` into
+# ~/.config/opencode/opencode.json.
+#   use: [{ module: veneer/harness/opencode@1, with: { opencode_version: "1.2.3" } }]
+version: 1
+vars:
+  node_version: "22"
+  opencode_version: latest
+tools:
+  node: "{{ vars.node_version }}"
+  # The package's own postinstall links the platform binary.
+  "npm:opencode-ai":
+    version: "{{ vars.opencode_version }}"
+    allow_builds: ["opencode-ai"]
+harnesses:
+  opencode: {}

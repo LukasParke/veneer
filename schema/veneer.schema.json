@@ -1,0 +1,622 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Spec",
+  "type": "object",
+  "properties": {
+    "version": {
+      "description": "Spec format version. Must be `1`.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "base": {
+      "description": "Base image used by `veneer bake`.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "extends": {
+      "description": "Specs to layer underneath this one (consumed during resolution).",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "use": {
+      "description": "Reusable spec fragments.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ModuleUse"
+      }
+    },
+    "vars": {
+      "description": "Template variables.",
+      "type": "object",
+      "additionalProperties": true,
+      "default": {}
+    },
+    "secrets": {
+      "description": "Secrets, resolved at workspace time only.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Secret"
+      }
+    },
+    "env": {
+      "description": "Environment variables.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Scalar"
+      }
+    },
+    "packages": {
+      "description": "OS packages.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Package"
+      }
+    },
+    "tools": {
+      "description": "Tools installed through mise. The key `from` names a mise.toml/.tool-versions file.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/ToolVersion"
+      }
+    },
+    "deps": {
+      "description": "Project dependency installs, detected from lockfiles.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Dep"
+      }
+    },
+    "images": {
+      "description": "Container images pre-pulled at build time.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "workspace": {
+      "description": "Workspace folder layout.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Workspace"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "services": {
+      "description": "Services. The key `from` names a compose file.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/ServiceEntry"
+      }
+    },
+    "hooks": {
+      "description": "Lifecycle hooks.",
+      "$ref": "#/$defs/Hooks"
+    },
+    "defaults": {
+      "description": "Retry and timeout defaults for every step.",
+      "$ref": "#/$defs/Defaults"
+    },
+    "mcp": {
+      "description": "MCP servers, rendered into each enabled harness's own config file.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/McpServer"
+      }
+    },
+    "harnesses": {
+      "description": "Agent harnesses to configure: claude-code, codex, pi, omp, opencode (the\n`veneer/harness/*` modules enable theirs).",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Harness"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "version"
+  ],
+  "$defs": {
+    "ModuleUse": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/ModuleRef"
+        }
+      ]
+    },
+    "ModuleRef": {
+      "type": "object",
+      "properties": {
+        "module": {
+          "type": "string"
+        },
+        "with": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "module"
+      ]
+    },
+    "Secret": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/SecretSource"
+        },
+        "path": {
+          "description": "Path for `from: file`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "run": {
+          "description": "Command for `from: command`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "var": {
+          "description": "Host variable name for `from: env` (defaults to the secret's name).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "from"
+      ]
+    },
+    "SecretSource": {
+      "type": "string",
+      "enum": [
+        "env",
+        "file",
+        "command"
+      ]
+    },
+    "Scalar": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "integer",
+          "format": "int64"
+        },
+        {
+          "type": "number",
+          "format": "double"
+        },
+        {
+          "type": "boolean"
+        }
+      ]
+    },
+    "Package": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/FromRef"
+        }
+      ]
+    },
+    "FromRef": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "from"
+      ]
+    },
+    "ToolVersion": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "integer",
+          "format": "int64"
+        },
+        {
+          "type": "number",
+          "format": "double"
+        },
+        {
+          "description": "`{ version, ...mise tool options }`, e.g. `allow_builds: [\"pkg\"]` to run an npm\npackage's install scripts.",
+          "$ref": "#/$defs/ToolOptions"
+        }
+      ]
+    },
+    "ToolOptions": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "$ref": "#/$defs/Scalar"
+        }
+      },
+      "required": [
+        "version"
+      ],
+      "additionalProperties": true
+    },
+    "Dep": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "from"
+      ]
+    },
+    "Workspace": {
+      "type": "object",
+      "properties": {
+        "root": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "repos": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Repo"
+          }
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FileSpec"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Repo": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "path": {
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/RepoMode"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "url",
+        "path"
+      ]
+    },
+    "RepoMode": {
+      "type": "string",
+      "enum": [
+        "clone",
+        "worktree",
+        "copy"
+      ]
+    },
+    "FileSpec": {
+      "type": "object",
+      "properties": {
+        "src": {
+          "type": "string"
+        },
+        "dest": {
+          "type": "string"
+        },
+        "mode": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "src",
+        "dest"
+      ]
+    },
+    "ServiceEntry": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Service"
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "Service": {
+      "type": "object",
+      "properties": {
+        "image": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "run": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Scalar"
+          }
+        },
+        "ports": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "healthcheck": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Healthcheck"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "depends_on": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false
+    },
+    "Healthcheck": {
+      "type": "object",
+      "properties": {
+        "cmd": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "http": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "interval": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "retries": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "Hooks": {
+      "type": "object",
+      "properties": {
+        "build": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Hook"
+          }
+        },
+        "workspace": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Hook"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Hook": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/HookSpec"
+        }
+      ]
+    },
+    "HookSpec": {
+      "type": "object",
+      "properties": {
+        "run": {
+          "type": "string"
+        },
+        "creates": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "unless": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "retries": {
+          "description": "Retry the hook this many times after any failure (exponential backoff).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "default": null
+        },
+        "timeout": {
+          "description": "Kill the hook after this long, e.g. `90s`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "run"
+      ]
+    },
+    "Defaults": {
+      "type": "object",
+      "properties": {
+        "retries": {
+          "description": "Retries for transient network failures in network steps (packages, tools, deps,\nimages, repos, services). Default 4.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "default": null
+        },
+        "timeout": {
+          "description": "Per-step timeout, e.g. `10m`. Default: none.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "McpServer": {
+      "description": "One MCP server: a stdio `command`, or a remote `url` (Streamable HTTP).",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        }
+      },
+      "additionalProperties": false
+    },
+    "Harness": {
+      "type": "object",
+      "properties": {
+        "home": {
+          "description": "Home directory whose config files are written (default: `$HOME`), e.g.\n`\"{{ workspace.root }}/.home\"` to isolate workspaces that share a machine.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

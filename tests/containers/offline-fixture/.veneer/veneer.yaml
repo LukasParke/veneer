@@ -1,0 +1,14 @@
+# Offline / lock / retry fixture: every network-backed step kind except OS packages.
+version: 1
+tools:
+  jq: "1.7"
+images: [busybox:1.36]
+workspace:
+  root: "/work/{{ workspace.id }}"
+  repos:
+    - { url: /srv/upstream.git, path: src, ref: main }
+  files:
+    - { src: ../hello.txt, dest: hello.txt }
+hooks:
+  workspace:
+    - { run: "jq --version > jq.txt", creates: jq.txt }

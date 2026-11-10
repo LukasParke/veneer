@@ -1,0 +1,4 @@
+version: 1
+hooks:
+  workspace:
+    - { run: "sleep 60", timeout: 1s }

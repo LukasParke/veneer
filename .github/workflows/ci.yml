@@ -1,0 +1,43 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+  containers:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p veneer
+      - run: tests/containers/build-linux.sh
+      - name: Enable KVM for the vm suite
+        run: |
+          if [ -e /dev/kvm ] && command -v udevadm >/dev/null; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+            sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+          else
+            echo "no /dev/kvm on this runner; the vm suite will report it"
+          fi
+      - uses: jdx/mise-action@v2 # the k8s suite runs kind + kubectl through `mise x`
+        with:
+          install: false
+      - run: tests/containers/run.sh
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # mise resolves aqua tools through the GitHub API

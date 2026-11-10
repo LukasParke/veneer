@@ -1,0 +1,9 @@
+version: 1
+secrets:
+  tok: { from: env, var: TEST_API_TOKEN }
+workspace:
+  root: "/work/{{ workspace.id }}"
+hooks:
+  workspace:
+    - { run: "echo \"$TRACEPARENT\" > tp.txt", creates: tp.txt }
+    - { run: "echo using {{ secrets.tok }} >/dev/null" }

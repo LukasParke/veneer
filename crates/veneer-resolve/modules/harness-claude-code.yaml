@@ -1,0 +1,15 @@
+# Built-in module: veneer/harness/claude-code@1
+# Installs Claude Code through mise (npm backend). Override with `with:`:
+#   use: [{ module: veneer/harness/claude-code@1, with: { claude_code_version: "2.0.0" } }]
+version: 1
+vars:
+  node_version: "22"
+  claude_code_version: latest
+tools:
+  node: "{{ vars.node_version }}"
+  # The package's own postinstall fetches the native binary.
+  "npm:@anthropic-ai/claude-code":
+    version: "{{ vars.claude_code_version }}"
+    allow_builds: ["@anthropic-ai/claude-code"]
+harnesses:
+  claude-code: {}

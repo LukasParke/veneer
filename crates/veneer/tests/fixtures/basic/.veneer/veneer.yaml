@@ -1,0 +1,16 @@
+version: 1
+extends: [./base.yaml]
+vars:
+  python: "3.12"
+  db_name: "bench_{{ workspace.id }}"
+env:
+  DEBUG: ~
+  DATABASE_URL: "postgres://localhost/{{ vars.db_name }}"
+packages: [libpq-dev]
+tools:
+  $ref: ./tools.yaml
+  python: "{{ vars.python }}"
+services:
+  db:
+    image: postgres:16
+    env: { POSTGRES_DB: "{{ vars.db_name }}" }

@@ -1,0 +1,19 @@
+[package]
+name = "veneer-spec"
+description = "veneer spec model, value tree, and diagnostics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+indexmap.workspace = true
+schemars.workspace = true
+
+[dev-dependencies]
+serde.workspace = true
+serde_json.workspace = true
+indexmap.workspace = true

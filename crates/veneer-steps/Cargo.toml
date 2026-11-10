@@ -1,0 +1,27 @@
+[package]
+name = "veneer-steps"
+description = "Step implementations for veneer: packages, tools, deps, images, repos, files, services, hooks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+veneer-plan.workspace = true
+veneer-exec.workspace = true
+indexmap.workspace = true
+serde_json.workspace = true
+blake3.workspace = true
+toml.workspace = true
+libc.workspace = true
+ureq.workspace = true
+sha2.workspace = true
+hex.workspace = true
+tar.workspace = true
+tempfile.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+veneer-resolve.workspace = true
+veneer-spec.workspace = true
