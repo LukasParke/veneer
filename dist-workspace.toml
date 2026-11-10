@@ -19,3 +19,6 @@ publish-jobs = ["npm", "./publish-image"]
 hosting = "github"
 # Whether to install an updater program
 install-updater = false
+
+[dist.github-custom-job-permissions]
+publish-image = { contents = "read", packages = "write", id-token = "write" }
